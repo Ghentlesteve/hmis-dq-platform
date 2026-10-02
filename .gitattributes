@@ -1,0 +1,6 @@
+# Store text files with LF line endings so they work inside Linux containers
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.parquet binary
