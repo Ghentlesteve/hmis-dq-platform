@@ -25,8 +25,17 @@ class Settings(BaseSettings):
     dhis2_password: SecretStr
     dhis2_timeout_seconds: float = Field(default=60.0, gt=0)
 
-    # Local storage for raw pulls (replaced by S3/MinIO in stage 2)
+    # Local storage for raw pulls (used when the lake isn't available)
     data_dir: Path = Path("data")
+
+    # Data lake (S3 API). Leave the endpoint empty to use AWS S3 itself.
+    s3_endpoint_url: HttpUrl | None = None
+    s3_access_key: str | None = None
+    s3_secret_key: SecretStr | None = None
+    s3_region: str = "us-east-1"
+    bronze_bucket: str = "bronze"
+    silver_bucket: str = "silver"
+    gold_bucket: str = "gold"
 
     @property
     def raw_dir(self) -> Path:
