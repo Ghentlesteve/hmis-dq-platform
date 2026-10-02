@@ -28,6 +28,8 @@ from hmis_dq.extract.sync import sync_stores
 app = typer.Typer(help="HMIS data quality and early-warning platform.", no_args_is_help=True)
 lake_app = typer.Typer(help="Manage the S3 data lake.", no_args_is_help=True)
 app.add_typer(lake_app, name="lake")
+spark_app = typer.Typer(help="Spark jobs (run inside the spark container).", no_args_is_help=True)
+app.add_typer(spark_app, name="spark")
 console = Console()
 
 StoreOption = Annotated[
@@ -222,6 +224,25 @@ def lake_status() -> None:
     for dataset, count in sorted(datasets.items()):
         table.add_row(f"  {dataset}", f"{count:,}")
     console.print(table if areas else "[yellow]The bronze bucket is empty.[/]")
+
+
+@spark_app.command("smoke")
+def spark_smoke() -> None:
+    """Read the bronze layer from the lake with Spark and count values per dataset/year."""
+    # imported here so the rest of the CLI works on machines without pyspark
+    from hmis_dq.spark.smoke import bronze_value_counts  # noqa: PLC0415
+
+    settings = get_settings()
+    with console.status("Starting Spark and scanning the bronze bucket..."):
+        rows = bronze_value_counts(settings).collect()
+
+    table = Table(title=f"Bronze layer via Spark (s3a://{settings.bronze_bucket})")
+    for column in ("dataset", "year", "values", "facilities"):
+        table.add_column(column, justify="left" if column == "dataset" else "right")
+    for row in rows:
+        table.add_row(row.dataset, row.year, f"{row['values']:,}", f"{row.facilities:,}")
+    table.add_row("[bold]total[/]", "", f"[bold]{sum(r['values'] for r in rows):,}[/]", "")
+    console.print(table)
 
 
 if __name__ == "__main__":

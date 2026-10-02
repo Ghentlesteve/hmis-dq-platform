@@ -24,7 +24,11 @@ dependencies = [
 hmis-dq = "hmis_dq.cli:app"
 
 [project.optional-dependencies]
+spark = [
+    "pyspark==4.1.3",  # must match the version in docker/spark.Dockerfile
+]
 dev = [
+    "hmis-dq[spark]",
     "boto3-stubs[s3]>=1.35",
     "moto[s3]>=5.0",
     "pytest>=8.3",
@@ -54,6 +58,8 @@ ignore = ["PLR0913"]
 "tests/**" = ["PLR2004"]
 # Typer maps each function parameter to a CLI option
 "src/hmis_dq/cli.py" = ["PLR0917"]
+# `from pyspark.sql import functions as F` is the standard PySpark convention
+"src/hmis_dq/spark/**" = ["N812"]
 
 [tool.mypy]
 python_version = "3.11"

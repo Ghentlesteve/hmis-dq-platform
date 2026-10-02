@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     silver_bucket: str = "silver"
     gold_bucket: str = "gold"
 
+    # Spark (local mode inside the job container; a cluster URL in Kubernetes later)
+    spark_master: str = "local[*]"
+    spark_driver_memory: str = "3g"
+    spark_shuffle_partitions: int = Field(default=16, gt=0)
+
     @property
     def raw_dir(self) -> Path:
         return self.data_dir / "raw"

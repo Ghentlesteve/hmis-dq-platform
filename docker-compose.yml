@@ -59,5 +59,23 @@ services:
         echo "s3.bucket.list" | weed shell -master=lake:9333 -filer=lake:8888
     restart: "no"
 
+  # Spark job runner. Not started by `up`; run jobs on demand:
+  #   docker compose run --rm --service-ports spark hmis-dq spark smoke
+  spark:
+    build:
+      context: .
+      dockerfile: docker/spark.Dockerfile
+    image: hmis-dq-spark:dev
+    profiles: ["jobs"]
+    env_file: .env
+    environment:
+      # inside the compose network the lake is reached by its service name
+      HMIS_S3_ENDPOINT_URL: http://lake:8333
+    depends_on:
+      lake:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:4040:4040" # Spark UI while a job runs
+
 volumes:
   lake-data:
