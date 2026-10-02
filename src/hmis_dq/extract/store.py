@@ -12,19 +12,25 @@ The extraction code works with either.
 import gzip
 import json
 import os
+import socket
 import tempfile
 from collections.abc import Iterator, Mapping
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Protocol, Self
+from urllib.parse import urlsplit
 
 import boto3
 from botocore.config import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
-from hmis_dq.config import Settings
+from hmis_dq.config import Settings, StoreKind
 
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
+
+
+class LakeUnavailableError(RuntimeError):
+    """The S3 endpoint can't be reached or the bucket doesn't exist."""
 
 
 class RawStore(Protocol):
@@ -105,6 +111,25 @@ class S3RawStore:
         self.client = client
         self.bucket = bucket
 
+    def ensure_reachable(self, *, timeout: float = 2.0) -> None:
+        """Fail fast with a helpful message instead of waiting through boto3's retries."""
+        endpoint = self.client.meta.endpoint_url
+        url = urlsplit(endpoint)
+        port = url.port or (443 if url.scheme == "https" else 80)
+        try:
+            socket.create_connection((url.hostname or "localhost", port), timeout=timeout).close()
+        except OSError as exc:
+            raise LakeUnavailableError(
+                f"nothing is listening at {endpoint}. Is the lake running? "
+                "Start it with `docker compose up -d`, or use --store local."
+            ) from exc
+        try:
+            self.client.head_bucket(Bucket=self.bucket)
+        except (BotoCoreError, ClientError) as exc:
+            raise LakeUnavailableError(
+                f"can't open bucket {self.bucket!r} at {endpoint}: {exc}"
+            ) from exc
+
     @classmethod
     def from_settings(cls, settings: Settings, bucket: str | None = None) -> Self:
         secret = settings.s3_secret_key.get_secret_value() if settings.s3_secret_key else None
@@ -152,3 +177,12 @@ class S3RawStore:
         for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
             for obj in page.get("Contents", []):
                 yield obj["Key"]
+
+
+def open_store(settings: Settings, kind: StoreKind | None = None) -> RawStore:
+    """Open the bronze store chosen in settings (or overridden by ``kind``)."""
+    if (kind or settings.store) is StoreKind.LOCAL:
+        return LocalRawStore(settings.raw_dir)
+    store = S3RawStore.from_settings(settings)
+    store.ensure_reachable()
+    return store
