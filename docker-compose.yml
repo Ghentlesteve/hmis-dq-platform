@@ -1,0 +1,63 @@
+# Local data lake: an S3-compatible object store (SeaweedFS) with one bucket per layer.
+#
+#   docker compose up -d          start it (data persists in a named volume)
+#   docker compose down           stop it, keep the data
+#   docker compose down -v        stop it and DELETE all lake data
+#
+# Credentials come from .env (see .env.example). The app talks to it through the
+# standard S3 API, so switching to AWS S3 later is a configuration change.
+
+name: hmis-dq
+
+x-s3-credentials: &s3-credentials
+  S3_ACCESS_KEY: ${HMIS_S3_ACCESS_KEY:?set HMIS_S3_ACCESS_KEY in .env}
+  S3_SECRET_KEY: ${HMIS_S3_SECRET_KEY:?set HMIS_S3_SECRET_KEY in .env}
+
+services:
+  lake:
+    image: chrislusf/seaweedfs:4.48
+    container_name: hmis-lake
+    environment: *s3-credentials
+    # Write the S3 identity file from the environment (so no secret is committed),
+    # then run master + volume + filer + S3 gateway in a single process.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        mkdir -p /etc/seaweedfs
+        cat > /etc/seaweedfs/s3.json <<EOF
+        {"identities": [{"name": "hmis", "credentials": [{"accessKey": "$$S3_ACCESS_KEY",
+          "secretKey": "$$S3_SECRET_KEY"}], "actions": ["Admin", "Read", "Write", "List", "Tagging"]}]}
+        EOF
+        exec weed server -dir=/data -ip.bind=0.0.0.0 -volume.max=0 \
+          -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json
+    ports:
+      - "127.0.0.1:8333:8333" # S3 API
+      - "127.0.0.1:8888:8888" # file browser (filer UI)
+      - "127.0.0.1:9333:9333" # cluster status (master UI)
+    volumes:
+      - lake-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9333/cluster/status && wget -q -S -O /dev/null http://127.0.0.1:8333/ 2>&1 | grep -q 'HTTP/'"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    restart: unless-stopped
+
+  # One-shot job: create the lake buckets (safe to re-run).
+  lake-init:
+    image: chrislusf/seaweedfs:4.48
+    depends_on:
+      lake:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        for bucket in bronze silver gold; do
+          echo "s3.bucket.create -name $$bucket" | weed shell -master=lake:9333 -filer=lake:8888
+        done
+        echo "s3.bucket.list" | weed shell -master=lake:9333 -filer=lake:8888
+    restart: "no"
+
+volumes:
+  lake-data:
