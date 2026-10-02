@@ -81,7 +81,8 @@ def extract(
     ] = None,
     workers: Annotated[int, typer.Option(min=1, max=16, help="Parallel requests.")] = 4,
     refresh_recent: Annotated[
-        int, typer.Option(min=0, help="Always re-fetch this many most recent months.")
+        int,
+        typer.Option(min=0, help="Always re-fetch the last N complete months (late reports)."),
     ] = 3,
     force: Annotated[bool, typer.Option(help="Re-fetch chunks that already exist.")] = False,
     skip_metadata: Annotated[bool, typer.Option(help="Don't snapshot metadata.")] = False,
@@ -191,6 +192,7 @@ def lake_upload(
             prefix=prefix,
             overwrite=overwrite,
             workers=workers,
+            on_planned=lambda n: progress.update(task, total=n),
             on_copied=lambda _: progress.advance(task),
         )
 

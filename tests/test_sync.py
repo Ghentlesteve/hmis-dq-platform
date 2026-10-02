@@ -45,7 +45,9 @@ def test_overwrite_copies_existing_keys_again(tmp_path: Path) -> None:
 def test_reports_progress_per_key(tmp_path: Path) -> None:
     source, destination = stores(tmp_path)
     seen: list[str] = []
+    planned: list[int] = []
 
-    sync_stores(source, destination, on_copied=seen.append)
+    sync_stores(source, destination, on_planned=planned.append, on_copied=seen.append)
 
+    assert planned == [3]
     assert sorted(seen) == sorted(source.list_keys())

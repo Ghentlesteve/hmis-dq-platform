@@ -25,11 +25,14 @@ def sync_stores(
     prefix: str = "",
     overwrite: bool = False,
     workers: int = 8,
+    on_planned: Callable[[int], None] | None = None,
     on_copied: Callable[[str], None] | None = None,
 ) -> SyncResult:
     keys = list(source.list_keys(prefix))
     existing = set() if overwrite else set(destination.list_keys(prefix))
     to_copy = [k for k in keys if k not in existing]
+    if on_planned is not None:
+        on_planned(len(to_copy))
 
     def copy(key: str) -> int:
         written = destination.put_json(key, source.get_json(key))

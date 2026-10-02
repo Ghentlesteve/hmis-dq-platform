@@ -147,9 +147,10 @@ class Extractor:
         }
 
     def _is_recent(self, month: Month) -> bool:
+        """True for the last N *complete* months, and the current (partial) month."""
         if self.refresh_recent_months <= 0:
             return False
-        cutoff = Month.from_date(self.today).shift(-(self.refresh_recent_months - 1))
+        cutoff = Month.from_date(self.today).shift(-self.refresh_recent_months)
         return month >= cutoff
 
     # ------------------------------------------------------------- metadata

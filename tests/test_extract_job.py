@@ -126,13 +126,18 @@ def test_recent_months_are_always_refreshed(fake: FakeDHIS2, store: LocalRawStor
     make_extractor(fake, store).extract_data_values(["dsA"], ["ou1"], months, run_id="r1")
     fake.data_requests.clear()
 
-    # today is 2025-06-15, so the last 2 months are May and June
+    # today is 2025-06-15: the last 2 complete months are April and May,
+    # plus June itself, which is still in progress
     summary = make_extractor(fake, store, refresh_recent_months=2).extract_data_values(
         ["dsA"], ["ou1"], months, run_id="r2"
     )
 
-    assert summary.skipped == 2
-    assert sorted(start for _, _, start in fake.data_requests) == ["2025-05-01", "2025-06-01"]
+    assert summary.skipped == 1  # only March
+    assert sorted(start for _, _, start in fake.data_requests) == [
+        "2025-04-01",
+        "2025-05-01",
+        "2025-06-01",
+    ]
 
 
 def test_force_refetches_everything(fake: FakeDHIS2, store: LocalRawStore) -> None:

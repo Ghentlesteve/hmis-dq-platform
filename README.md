@@ -8,8 +8,8 @@ shows the results on an interactive map dashboard.
 
 ## Roadmap
 
-1. [ ] Foundation: project layout, config, DHIS2 extraction client
-2. [ ] Data lake: MinIO (S3-compatible) bronze layer
+1. [x] Foundation: project layout, config, DHIS2 extraction client
+2. [x] Data lake: S3-compatible object store (SeaweedFS), bronze layer
 3. [ ] PySpark transforms: silver and gold tables
 4. [ ] Data quality engine: WHO DQR metrics at scale
 5. [ ] ML: anomaly detection and forecasting vs. baseline
@@ -19,13 +19,29 @@ shows the results on an interactive map dashboard.
 
 ## Local setup
 
+Requires Python 3.11+ and Docker Desktop.
+
 ```bash
 python -m venv .venv
 .venv\Scripts\activate          # Windows
 pip install -e ".[dev]"
 copy .env.example .env          # then fill in the values
-pytest
+docker compose up -d            # start the local S3 data lake
+pytest                          # unit tests + lake integration test
 ```
+
+## Usage
+
+```bash
+hmis-dq ping                    # check the DHIS2 connection
+hmis-dq extract --start 2023-01 # DHIS2 -> bronze bucket (resumable)
+hmis-dq lake status             # what's in the lake
+hmis-dq lake upload             # copy a local data/raw folder into the lake
+```
+
+Extraction pulls one chunk per dataset x district x month, in parallel. Re-runs
+skip chunks already stored and re-fetch only the last few months, where late
+reports still arrive.
 
 ## Data
 
