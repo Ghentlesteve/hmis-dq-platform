@@ -159,8 +159,21 @@ class DHIS2Client:
         *,
         children: bool = True,
     ) -> DataValueSet:
-        """Fetch raw data values for one dataset, org unit subtree and date range."""
-        body = self.get_json(
+        """Fetch data values for one dataset, org unit subtree and date range."""
+        body = self.data_value_set_raw(data_set, org_unit, start, end, children=children)
+        return DataValueSet.model_validate(body)
+
+    def data_value_set_raw(
+        self,
+        data_set: str,
+        org_unit: str,
+        start: date,
+        end: date,
+        *,
+        children: bool = True,
+    ) -> dict[str, Any]:
+        """Same as :meth:`data_value_set` but returns the JSON exactly as the server sent it."""
+        return self.get_json(
             "dataValueSets",
             {
                 "dataSet": data_set,
@@ -170,4 +183,3 @@ class DHIS2Client:
                 "children": str(children).lower(),
             },
         )
-        return DataValueSet.model_validate(body)
