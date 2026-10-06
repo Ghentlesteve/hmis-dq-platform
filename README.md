@@ -47,6 +47,20 @@ docker compose run --rm spark hmis-dq spark build   # bronze -> silver -> gold -
 docker compose run --rm spark-test                  # Spark unit tests (Linux)
 ```
 
+## Explore the data
+
+[`notebooks/tour.ipynb`](notebooks/tour.ipynb) follows one facility and one indicator
+through every layer, from DHIS2's raw JSON to the facility's data quality score, with
+charts. It reads the lake with DuckDB, so it runs on any laptop without Spark:
+
+```bash
+pip install -e ".[explore]"
+docker compose up -d        # the lake must be running
+```
+
+Then open the notebook in VS Code or Jupyter, pick the `.venv` kernel and **Run All**.
+Change `FACILITY`, `INDICATOR` or `DATASET` in the first cell to explore anything else.
+
 ## Data quality engine
 
 Every check writes to one `findings` table (check, WHO DQR dimension, severity,
