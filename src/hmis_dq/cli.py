@@ -294,11 +294,37 @@ def spark_gold() -> None:
     console.print(completeness)
 
 
+@spark_app.command("dq")
+def spark_dq() -> None:
+    """Run the data quality checks over the gold layer and write the findings."""
+    from hmis_dq.spark.dq.job import run_dq  # noqa: PLC0415  (pyspark only needed here)
+
+    settings = get_settings()
+    with console.status("Running data quality checks..."):
+        result = run_dq(settings)
+
+    rates = Table(title="Reporting (whole window)")
+    for column in ("dataset", "completeness", "timeliness"):
+        rates.add_column(column, justify="left" if column == "dataset" else "right")
+    for dataset, completeness, timeliness in result.completeness:
+        shown = f"{timeliness:.1%}" if timeliness is not None else "[yellow]unknown[/]"
+        rates.add_row(dataset, f"{completeness:.1%}", shown)
+    console.print(rates)
+
+    table = Table(title=f"Findings: s3a://{settings.gold_bucket}/dhis2/dq/findings/")
+    for column in ("check", "severity", "findings"):
+        table.add_column(column, justify="right" if column == "findings" else "left")
+    for check, severity, count in result.findings_by_check:
+        table.add_row(check, severity, f"{count:,}")
+    console.print(table)
+
+
 @spark_app.command("build")
 def spark_build() -> None:
-    """Run the whole Spark pipeline: silver, then gold."""
+    """Run the whole Spark pipeline: silver, gold, then the data quality checks."""
     spark_silver()
     spark_gold()
+    spark_dq()
 
 
 if __name__ == "__main__":
