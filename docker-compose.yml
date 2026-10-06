@@ -65,6 +65,7 @@ services:
     build:
       context: .
       dockerfile: docker/spark.Dockerfile
+      target: runtime
     image: hmis-dq-spark:dev
     profiles: ["jobs"]
     env_file: .env
@@ -76,6 +77,20 @@ services:
         condition: service_healthy
     ports:
       - "127.0.0.1:4040:4040" # Spark UI while a job runs
+
+  # Spark unit tests in Linux, using your current code (mounted, no rebuild needed):
+  #   docker compose run --rm spark-test
+  spark-test:
+    build:
+      context: .
+      dockerfile: docker/spark.Dockerfile
+      target: test
+    image: hmis-dq-spark:test
+    profiles: ["jobs"]
+    volumes:
+      - ./src:/app/src:ro
+      - ./tests:/app/tests:ro
+      - ./pyproject.toml:/app/pyproject.toml:ro
 
 volumes:
   lake-data:

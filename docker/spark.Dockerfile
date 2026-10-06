@@ -6,7 +6,7 @@
 # Layers are ordered from least to most frequently changed, so editing code
 # only rebuilds the last layer instead of re-downloading 650 MB of jars.
 
-FROM eclipse-temurin:21-jre-noble
+FROM eclipse-temurin:21-jre-noble AS runtime
 
 ARG PYSPARK_VERSION=4.1.3
 # hadoop-aws must match the Hadoop version bundled with PySpark (3.4.2 for 4.1.x),
@@ -36,11 +36,12 @@ RUN cd ${JARS} \
     && echo "${AWS_SDK_SHA1}  bundle-${AWS_SDK_VERSION}.jar" | sha1sum -c - \
     && chmod 644 *.jar
 
-# Project dependencies first (cached), then the source code
+# The project, installed in editable mode: mounting ./src over /app/src (as the
+# spark-test service does) runs the mounted code without rebuilding the image.
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN pip install --no-cache-dir ".[spark]"
+RUN pip install --no-cache-dir -e ".[spark]"
 
 # Don't run as root
 RUN useradd --create-home --uid 1001 hmis
@@ -49,3 +50,11 @@ USER hmis
 # tini forwards Ctrl+C to Spark so jobs stop cleanly
 ENTRYPOINT ["tini", "--"]
 CMD ["hmis-dq", "--help"]
+
+
+# Test image: the runtime plus pytest, for the Spark tests (Linux, like CI)
+FROM runtime AS test
+USER root
+RUN pip install --no-cache-dir "pytest>=8.3"
+USER hmis
+CMD ["pytest", "-p", "no:cacheprovider", "tests/spark"]

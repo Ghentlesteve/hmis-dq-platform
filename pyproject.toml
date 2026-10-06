@@ -43,7 +43,10 @@ packages = ["src/hmis_dq"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
-markers = ["integration: needs the local lake running (docker compose up -d)"]
+markers = [
+    "integration: needs the local lake running (docker compose up -d)",
+    "spark: needs a working local Spark (always works in `docker compose run --rm spark-test`)",
+]
 
 [tool.ruff]
 line-length = 100
@@ -60,6 +63,7 @@ ignore = ["PLR0913"]
 "src/hmis_dq/cli.py" = ["PLR0917"]
 # `from pyspark.sql import functions as F` is the standard PySpark convention
 "src/hmis_dq/spark/**" = ["N812"]
+"tests/spark/**" = ["N812"]
 
 [tool.mypy]
 python_version = "3.11"

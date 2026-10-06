@@ -245,5 +245,30 @@ def spark_smoke() -> None:
     console.print(table)
 
 
+@spark_app.command("silver")
+def spark_silver() -> None:
+    """Build the silver layer: bronze JSON -> clean Parquet tables in the silver bucket."""
+    from hmis_dq.spark.silver import run_silver  # noqa: PLC0415  (pyspark only needed here)
+
+    settings = get_settings()
+    with console.status("Building silver tables (this takes a few minutes)..."):
+        result = run_silver(settings)
+
+    table = Table(title=f"Silver layer: s3a://{settings.silver_bucket}/dhis2/")
+    table.add_column("table")
+    table.add_column("rows", justify="right")
+    for name, rows in result.row_counts.items():
+        table.add_row(name, f"{rows:,}")
+    console.print(table)
+
+    statuses = Table(title="data_values by value_status")
+    statuses.add_column("status")
+    statuses.add_column("rows", justify="right")
+    for status, rows in sorted(result.value_status_counts.items(), key=lambda kv: -kv[1]):
+        statuses.add_row(status, f"{rows:,}")
+    console.print(statuses)
+    console.print(f"Duplicates removed: {result.duplicates_removed:,}")
+
+
 if __name__ == "__main__":
     app()
