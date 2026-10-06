@@ -142,6 +142,14 @@ def test_short_series_is_not_tested(spark: SparkSession) -> None:
     assert outlier_findings(series(spark, [30.0, 31.0, 900.0]), rules).count() == 0
 
 
+def test_uncomputable_score_reads_na_not_zero(spark: SparkSession) -> None:
+    # 10 identical values make the MAD 0; the spike is still 3+ SD from the mean
+    (found,) = outlier_findings(series(spark, [*([30.0] * 10), 90.0])).collect()
+
+    assert found["severity"] == Severity.MEDIUM  # SD method only
+    assert found["message"].endswith("modified z n/a)")
+
+
 def test_constant_series_does_not_divide_by_zero(spark: SparkSession) -> None:
     scored = outlier_scores(series(spark, [5.0] * 8)).collect()
 

@@ -12,9 +12,20 @@ from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 
 from hmis_dq.config import Settings
+from hmis_dq.spark.dq.consistency import (
+    internal_consistency_findings,
+    time_consistency_findings,
+)
 from hmis_dq.spark.dq.outliers import outlier_findings
 from hmis_dq.spark.dq.reporting import district_reporting, facility_reporting, reporting_findings
 from hmis_dq.spark.dq.rules import DEFAULT_RULES, DQRules
+from hmis_dq.spark.dq.system import (
+    entered_before_period_end_findings,
+    last_updated_before_created_findings,
+    missing_coordinates_findings,
+    repeated_values_findings,
+    repeats_last_year_findings,
+)
 from hmis_dq.spark.session import build_spark, s3a_url
 
 
@@ -33,8 +44,12 @@ def run_dq(settings: Settings, rules: DQRules = DEFAULT_RULES) -> DQResult:
     def dq_path(table: str) -> str:
         return s3a_url(settings.gold_bucket, f"dhis2/dq/{table}/")
 
+    def silver(table: str) -> DataFrame:
+        return spark.read.parquet(s3a_url(settings.silver_bucket, f"dhis2/{table}/"))
+
     reports = gold("reporting").cache()
-    facility_months = gold("facility_month")
+    facility_months = gold("facility_month").cache()
+    units = silver("org_units").cache()
 
     facility_rates = facility_reporting(reports).cache()
     facility_rates.coalesce(1).write.mode("overwrite").parquet(dq_path("facility_reporting"))
@@ -47,6 +62,13 @@ def run_dq(settings: Settings, rules: DQRules = DEFAULT_RULES) -> DQResult:
         [
             reporting_findings(facility_rates, rules),
             outlier_findings(facility_months, rules),
+            internal_consistency_findings(facility_months, rules),
+            time_consistency_findings(gold("district_month"), rules),
+            last_updated_before_created_findings(silver("data_values"), units),
+            entered_before_period_end_findings(reports),
+            missing_coordinates_findings(units, reports.select("org_unit_id").distinct()),
+            repeated_values_findings(facility_months, rules),
+            repeats_last_year_findings(facility_months, rules),
         ],
     )
     # Overwrite the whole table: a check that finds nothing this run must not

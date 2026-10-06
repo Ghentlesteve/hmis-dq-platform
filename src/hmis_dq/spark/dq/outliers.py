@@ -15,7 +15,7 @@ robust method flag many values; grading them low keeps them visible without
 letting them dominate facility scores.
 """
 
-from pyspark.sql import DataFrame
+from pyspark.sql import Column, DataFrame
 from pyspark.sql import functions as F
 
 from hmis_dq.spark.dq.findings import to_findings
@@ -57,13 +57,17 @@ def outlier_findings(facility_months: DataFrame, rules: DQRules = DEFAULT_RULES)
     robust = F.coalesce(F.abs("modified_z") >= rules.robust_modified_z, F.lit(False))
     flagged = scored.filter(extreme | robust)
 
+    def shown(score: str) -> Column:
+        # a score that couldn't be computed (SD or MAD of 0) reads "n/a", not 0.0
+        return F.when(F.col(score).isNull(), F.lit("n/a")).otherwise(F.format_string("%.1f", score))
+
     message = F.format_string(
-        "%s = %.0f, typical %.0f (%.1f SD from mean, modified z %.1f)",
+        "%s = %.0f, typical %.0f (%s SD from mean, modified z %s)",
         "data_element",
         "value",
         "median",
-        F.coalesce("z", F.lit(0.0)),
-        F.coalesce("modified_z", F.lit(0.0)),
+        shown("z"),
+        shown("modified_z"),
     )
     return to_findings(
         flagged,
