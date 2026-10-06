@@ -7,7 +7,7 @@ import pytest
 from pyspark.sql import DataFrame, SparkSession
 
 from hmis_dq.spark.dq import consistency, system
-from hmis_dq.spark.dq.rules import IndicatorPair, PairKind, Severity
+from hmis_dq.spark.dq.rules import DQRules, IndicatorPair, PairKind, Severity
 
 pytestmark = pytest.mark.spark
 
@@ -174,25 +174,56 @@ def test_long_runs_are_high_severity(spark: SparkSession) -> None:
     assert found["severity"] == Severity.HIGH
 
 
+PATTERN = [25.0, 19, 20, 14, 20, 9, 22, 24]
+OTHER = [67.0, 14, 21, 56, 73, 94, 51, 50]
+
+
 def test_values_copied_from_last_year(spark: SparkSession) -> None:
-    pattern = [25.0, 19, 20, 14, 20, 9, 22, 24]
     fm = frame(
         spark,
-        fm_rows("copy", "Penta1", pattern, year=2024),
-        fm_rows("copy", "Penta1", pattern, year=2025),  # identical: copied
-        fm_rows("real", "Penta1", pattern, year=2024),
-        fm_rows("real", "Penta1", [v + 1 for v in pattern], year=2025),
+        fm_rows("copy", "Penta1", PATTERN, year=2024),
+        fm_rows("copy", "Penta1", PATTERN, year=2025),  # identical: copied
+        fm_rows("real", "Penta1", PATTERN, year=2024),
+        fm_rows("real", "Penta1", [v + 1 for v in PATTERN], year=2025),
     )
 
-    found = system.repeats_last_year_findings(fm).collect()
+    found = system.repeats_earlier_year_findings(fm).collect()
 
     assert [(r["org_unit_id"], r["period"], r["severity"]) for r in found] == [
         ("copy", "2025", Severity.HIGH)
     ]
-    assert (
-        found[0]["message"]
-        == "2025: 8 of 8 values (100%) are identical to the same month last year"
+    assert found[0]["message"] == (
+        "2025: 8 of 8 values (100%) are identical to the same month in one of the previous 2 years"
     )
+
+
+def test_values_copied_from_two_years_back(spark: SparkSession) -> None:
+    # Ngelehun CHC's pattern: 2025 repeats 2023, while 2024 is different
+    fm = frame(
+        spark,
+        fm_rows("f1", "Penta1", PATTERN, year=2023),
+        fm_rows("f1", "Penta1", OTHER, year=2024),
+        fm_rows("f1", "Penta1", PATTERN, year=2025),
+    )
+
+    found = {r["period"]: r for r in system.repeats_earlier_year_findings(fm).collect()}
+
+    assert set(found) == {"2025"}
+    assert (found["2025"]["value"], found["2025"]["expected"]) == (8.0, 8.0)
+
+
+def test_one_year_lookback_misses_the_two_year_copy(spark: SparkSession) -> None:
+    fm = frame(
+        spark,
+        fm_rows("f1", "Penta1", PATTERN, year=2023),
+        fm_rows("f1", "Penta1", OTHER, year=2024),
+        fm_rows("f1", "Penta1", PATTERN, year=2025),
+    )
+
+    rules = DQRules(copy_lookback_years=1)
+    found = system.repeats_earlier_year_findings(fm, rules).collect()
+
+    assert found == []  # which is why the check looks two years back
 
 
 def test_last_updated_before_created(spark: SparkSession) -> None:

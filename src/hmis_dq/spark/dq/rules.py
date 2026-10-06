@@ -66,8 +66,9 @@ class DQRules:
     repeat_min_months: int = 3  # same value this many months in a row
     repeat_high_months: int = 6
     repeat_min_value: float = 5  # small counts repeat naturally (1, 2, 3...)
-    copy_min_months: int = 6  # months comparable with the same month last year
-    copy_share: float = 0.5  # share of values identical to last year's
+    copy_lookback_years: int = 2  # compare with the same month 1..N years earlier
+    copy_min_months: int = 6  # months comparable with an earlier year
+    copy_share: float = 0.5  # share of values identical to an earlier year's
     copy_share_high: float = 0.8
 
 

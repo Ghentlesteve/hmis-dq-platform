@@ -74,7 +74,7 @@ plain-language message). Thresholds live in one place
 | Outliers | 3 SD from the facility's own mean, and modified z-score (median/MAD) >= 3.5 |
 | Internal consistency | negative Penta1->Penta3 and ANC1->ANC4 drop-out per year; OPV1/Penta1 ratio vs national |
 | Consistency over time | district totals vs the mean of up to 3 previous years, same months, +/-33% |
-| System | values identical to last year's; same value months in a row; impossible timestamps; reports entered before the month ended; datasets assigned to non-facilities; facilities without coordinates |
+| System | values identical to the same month 1-2 years earlier; same value months in a row; impossible timestamps; reports entered before the month ended; datasets assigned to non-facilities; facilities without coordinates |
 
 Each facility and district gets a 0-100 score per dimension (completeness,
 accuracy, consistency, integrity) and an overall grade. Every score is
@@ -89,10 +89,11 @@ Run over 1,021,137 values from 1,169 facilities, January 2023 to September 2026.
 |---|---|---|
 | Reporting completeness | **18.0%** (9,357 of 51,885 reports) | **84.1%** (20,383 of 24,234) |
 | Timeliness | unknown (see below) | unknown |
-| Overall score | **48.8 (D)** | **80.3 (B)** |
+| Overall score | **48.7 (D)** | **80.3 (B)** |
 
 1. **Copied, not counted.** 69-92% of each facility's monthly values are identical
-   to the same month the year before (1,748 facility-years flagged). This is also
+   to the same month one year earlier, and 70-77% to two years earlier; some
+   facilities alternate between two copied years (1,755 facility-years flagged). This is also
    why *consistency over time* finds nothing: totals are stable because they are
    copies. A check that looks perfect on its own is explained by another.
 2. **Four in five facilities don't report Child Health.** 1,161 facilities are

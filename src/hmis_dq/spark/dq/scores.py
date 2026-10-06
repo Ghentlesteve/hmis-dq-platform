@@ -7,7 +7,7 @@ so every number can be explained from counts:
 - accuracy:     1 - weighted share of values flagged as outliers
                 (high 1, medium 0.5, low 0.1: low flags are robust-method-only)
 - consistency:  1 - share of reported years with a negative drop-out
-- integrity:    1 - mean of: share of values identical to last year's,
+- integrity:    1 - mean of: share of values identical to an earlier year's,
                 share with impossible timestamps, share of reports entered
                 before the period ended
 

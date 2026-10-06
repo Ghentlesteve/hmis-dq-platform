@@ -30,7 +30,7 @@ from hmis_dq.spark.dq.system import (
     missing_coordinates_findings,
     non_facility_assignment_findings,
     repeated_values_findings,
-    repeats_last_year_findings,
+    repeats_earlier_year_findings,
 )
 from hmis_dq.spark.session import build_spark, s3a_url
 
@@ -41,7 +41,7 @@ ALL_CHECKS = (
     "outlier",
     *(pair.check for pair in INDICATOR_PAIRS),
     "consistency_over_time",
-    "repeats_last_year",
+    "repeats_earlier_year",
     "repeated_values",
     "entered_before_period_end",
     "last_updated_before_created",
@@ -94,7 +94,7 @@ def run_dq(settings: Settings, rules: DQRules = DEFAULT_RULES) -> DQResult:
                 silver("dataset_org_units"), units, reports.select("dataset_id").distinct()
             ),
             repeated_values_findings(facility_months, rules),
-            repeats_last_year_findings(facility_months, rules),
+            repeats_earlier_year_findings(facility_months, rules),
         ],
     )
     # Overwrite the whole table: a check that finds nothing this run must not
@@ -110,7 +110,7 @@ def run_dq(settings: Settings, rules: DQRules = DEFAULT_RULES) -> DQResult:
         facility_rates,
         facility_months,
         written,
-        copies=copy_counts(facility_months),
+        copies=copy_counts(facility_months, rules),
         timestamps=last_updated_counts(silver("data_values")),
         early_entries=early_entry_counts(reports),
     )

@@ -5,7 +5,8 @@
 - missing_coordinates: facilities that can't be placed on a map
 - non_facility_assignment: a dataset assigned to a district/country, not a facility
 - repeated_values: the same value several months running (copy-forward)
-- repeats_last_year: most of a year's values identical to the same month last year
+- repeats_earlier_year: most of a year's values identical to the same month in one
+  of the previous years (copies can come from two years back, not just one)
 """
 
 from pyspark.sql import DataFrame, Window
@@ -165,47 +166,69 @@ def repeated_values_findings(
     )
 
 
-def copy_counts(facility_months: DataFrame) -> DataFrame:
-    """Per facility, dataset and year: non-zero values identical to the same month last year."""
+def copy_counts(facility_months: DataFrame, rules: DQRules = DEFAULT_RULES) -> DataFrame:
+    """Per facility, dataset and year: non-zero values identical to the same month in any
+    of the previous ``copy_lookback_years`` years.
+
+    A value counts as *compared* when at least one earlier year has that month.
+    """
     keys = ["dataset_id", "org_unit_id", "data_element_id", "month"]
     with_month = facility_months.withColumn("month", F.substring("period", 5, 2))
-    last_year = with_month.select(
-        *keys, (F.col("year") + 1).alias("year"), F.col("value").alias("last_year_value")
+    lookback = range(1, rules.copy_lookback_years + 1)
+
+    joined = with_month
+    for years_back in lookback:
+        earlier = with_month.select(
+            *keys,
+            (F.col("year") + years_back).alias("year"),
+            F.col("value").alias(f"value_{years_back}y_earlier"),
+        )
+        joined = joined.join(earlier, [*keys, "year"], "left")
+
+    earlier_values = [F.col(f"value_{n}y_earlier") for n in lookback]
+    has_earlier = sum((v.isNotNull().cast("int") for v in earlier_values), start=F.lit(0)) > 0
+    matches = (
+        sum(
+            (F.coalesce(F.col("value") == v, F.lit(False)).cast("int") for v in earlier_values),
+            start=F.lit(0),
+        )
+        > 0
     )
     return (
-        with_month.join(last_year, [*keys, "year"])
-        .filter(F.col("value") > 0)  # zeros repeat naturally
+        joined.filter((F.col("value") > 0) & has_earlier)  # zeros repeat naturally
         .groupBy("dataset_id", *FACILITY_NAMES, "year")
         .agg(
             F.count("*").alias("compared"),
-            F.sum((F.col("value") == F.col("last_year_value")).cast("int")).alias("identical"),
+            F.sum(matches.cast("int")).alias("identical"),
         )
     )
 
 
-def repeats_last_year_findings(
+def repeats_earlier_year_findings(
     facility_months: DataFrame, rules: DQRules = DEFAULT_RULES
 ) -> DataFrame:
-    """Facility-years where most values equal the same month of the previous year."""
+    """Facility-years where most values equal the same month of an earlier year."""
     compared = (
-        copy_counts(facility_months)
+        copy_counts(facility_months, rules)
         .withColumn("share", F.col("identical") / F.col("compared"))
         .filter((F.col("compared") >= rules.copy_min_months) & (F.col("share") >= rules.copy_share))
         .withColumn("period", F.col("year").cast("string"))
     )
     return to_findings(
         compared,
-        check="repeats_last_year",
+        check="repeats_earlier_year",
         dimension=Dimension.SYSTEM,
         severity=F.when(F.col("share") >= rules.copy_share_high, Severity.HIGH).otherwise(
             Severity.MEDIUM
         ),
         message=F.format_string(
-            "%d: %d of %d values (%.0f%%) are identical to the same month last year",
+            "%d: %d of %d values (%.0f%%) are identical to the same month "
+            "in one of the previous %d years",
             "year",
             "identical",
             "compared",
             F.col("share") * 100,
+            F.lit(rules.copy_lookback_years),
         ),
         value=F.col("identical"),
         expected=F.col("compared"),
