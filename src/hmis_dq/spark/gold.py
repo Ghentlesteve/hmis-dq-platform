@@ -7,7 +7,8 @@
 - ``district_month``: district totals per indicator and month, with the
   dataset's reporting completeness alongside, for the map and the forecasts.
 
-Reporting window: a dataset is expected from the first month it has any data
+Reporting window: only facilities are expected to report. A dataset is expected
+from the first month it has any data
 (the demo database starts some datasets later than others) up to the latest
 month extracted, and only from facilities that were open in that month.
 
@@ -75,7 +76,11 @@ def _expected_reports(
             ),
         )
     )
-    open_units = units.select(*_facility_columns(), "opening_date", "closed_date")
+    # Only facilities send reports. DHIS2 configs sometimes assign a dataset to a
+    # district or the whole country too; those are reported as a DQ finding instead.
+    open_units = units.filter(F.col("is_facility")).select(
+        *_facility_columns(), "opening_date", "closed_date"
+    )
     period_end = F.last_day("period_start")
     deadlines = datasets.select(
         "dataset_id",

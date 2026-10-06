@@ -296,11 +296,11 @@ def spark_gold() -> None:
 
 @spark_app.command("dq")
 def spark_dq() -> None:
-    """Run the data quality checks over the gold layer and write the findings."""
+    """Run the data quality checks and scores over the gold layer."""
     from hmis_dq.spark.dq.job import run_dq  # noqa: PLC0415  (pyspark only needed here)
 
     settings = get_settings()
-    with console.status("Running data quality checks..."):
+    with console.status("Running data quality checks and scores..."):
         result = run_dq(settings)
 
     rates = Table(title="Reporting (whole window)")
@@ -311,12 +311,34 @@ def spark_dq() -> None:
         rates.add_row(dataset, f"{completeness:.1%}", shown)
     console.print(rates)
 
-    table = Table(title=f"Findings: s3a://{settings.gold_bucket}/dhis2/dq/findings/")
-    for column in ("check", "severity", "findings"):
-        table.add_column(column, justify="right" if column == "findings" else "left")
-    for check, severity, count in result.findings_by_check:
-        table.add_row(check, severity, f"{count:,}")
-    console.print(table)
+    severities = ("high", "medium", "low")
+    checks = Table(title="Findings by check (every check, including those with none)")
+    checks.add_column("check")
+    for severity in severities:
+        checks.add_column(severity, justify="right")
+    for check, counts in result.findings_by_check.items():
+        cells = [f"{counts[s]:,}" if s in counts else "[dim]0[/]" for s in severities]
+        checks.add_row(check, *cells)
+    console.print(checks)
+
+    dimensions = ("completeness", "accuracy", "consistency", "integrity", "overall")
+
+    def score_table(title: str, rows: list[dict[str, object]], label: str) -> Table:
+        table = Table(title=title)
+        table.add_column(label)
+        if label != "dataset_id":
+            table.add_column("dataset")
+        for dimension in dimensions:
+            table.add_column(dimension, justify="right")
+        table.add_column("grade", justify="center")
+        for row in rows:
+            cells = ["-" if row[d] is None else f"{row[d]:.1f}" for d in dimensions]
+            first = [str(row[label])] + ([] if label == "dataset_id" else [str(row["dataset_id"])])
+            table.add_row(*first, *cells, str(row["grade"]))
+        return table
+
+    console.print(score_table("National scores (0-100)", result.national, "dataset_id"))
+    console.print(score_table("Lowest-scoring districts", result.worst_districts, "district"))
 
 
 @spark_app.command("build")

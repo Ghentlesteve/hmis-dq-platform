@@ -17,7 +17,7 @@ VALUES_SCHEMA = (
 )
 UNITS_SCHEMA = (
     "org_unit_id string, name string, chiefdom_id string, chiefdom string, district_id string, "
-    "district string, opening_date date, closed_date date"
+    "district string, opening_date date, closed_date date, is_facility boolean"
 )
 
 
@@ -45,10 +45,12 @@ def value(
 @pytest.fixture
 def units(spark: SparkSession) -> DataFrame:
     rows = [
-        ("f1", "Facility 1", "c1", "Chiefdom 1", "d1", "District 1", None, None),
-        ("f2", "Facility 2", "c1", "Chiefdom 1", "d1", "District 1", None, None),
+        ("f1", "Facility 1", "c1", "Chiefdom 1", "d1", "District 1", None, None, True),
+        ("f2", "Facility 2", "c1", "Chiefdom 1", "d1", "District 1", None, None, True),
         # opened in March: not expected to report before then
-        ("f3", "Facility 3", "c2", "Chiefdom 2", "d1", "District 1", date(2025, 3, 15), None),
+        ("f3", "Facility 3", "c2", "Chiefdom 2", "d1", "District 1", date(2025, 3, 15), None, True),
+        # the national unit, wrongly assigned the dataset: never expected to report
+        ("nat", "Sierra Leone", None, None, None, None, None, None, False),
     ]
     return spark.createDataFrame(rows, UNITS_SCHEMA)
 
@@ -62,7 +64,7 @@ def elements(spark: SparkSession) -> DataFrame:
 
 @pytest.fixture
 def assignments(spark: SparkSession) -> DataFrame:
-    rows = [("ds1", "f1"), ("ds1", "f2"), ("ds1", "f3")]
+    rows = [("ds1", "f1"), ("ds1", "f2"), ("ds1", "f3"), ("ds1", "nat")]
     return spark.createDataFrame(rows, "dataset_id string, org_unit_id string")
 
 

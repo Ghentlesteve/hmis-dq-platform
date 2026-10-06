@@ -248,3 +248,19 @@ def test_missing_coordinates_only_for_facilities_expected_to_report(spark: Spark
     found = system.missing_coordinates_findings(units, expected).collect()
 
     assert [(r["org_unit_id"], r["facility"]) for r in found] == [("f2", "No GPS")]
+
+
+def test_dataset_assigned_to_a_non_facility(spark: SparkSession) -> None:
+    assignments = spark.createDataFrame(
+        [("ds1", "nat"), ("ds1", "f1"), ("other", "nat")], "dataset_id string, org_unit_id string"
+    )
+    units = spark.createDataFrame(
+        [("nat", "Sierra Leone", 1, False), ("f1", "Facility 1", 4, True)],
+        "org_unit_id string, name string, level int, is_facility boolean",
+    )
+    in_scope = spark.createDataFrame([("ds1",)], "dataset_id string")
+
+    (found,) = system.non_facility_assignment_findings(assignments, units, in_scope).collect()
+
+    assert (found["dataset_id"], found["org_unit_id"]) == ("ds1", "nat")
+    assert found["message"].startswith("Dataset assigned to Sierra Leone (level 1)")

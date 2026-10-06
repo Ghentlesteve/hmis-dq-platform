@@ -3,6 +3,7 @@
 - last_updated_before_created: a value edited before it existed (import/sync errors)
 - entered_before_period_end: a report entered before its month was over
 - missing_coordinates: facilities that can't be placed on a map
+- non_facility_assignment: a dataset assigned to a district/country, not a facility
 - repeated_values: the same value several months running (copy-forward)
 - repeats_last_year: most of a year's values identical to the same month last year
 """
@@ -20,14 +21,17 @@ def _facility_names(units: DataFrame) -> DataFrame:
     return units.select("org_unit_id", F.col("name").alias("facility"), "district_id", "district")
 
 
+def last_updated_counts(values: DataFrame) -> DataFrame:
+    """Per facility and dataset: values whose last edit predates their creation."""
+    return values.groupBy("dataset_id", "org_unit_id").agg(
+        F.count("*").alias("total"),
+        F.sum((F.col("last_updated") < F.col("created")).cast("int")).alias("bad"),
+    )
+
+
 def last_updated_before_created_findings(values: DataFrame, units: DataFrame) -> DataFrame:
-    """Per facility and dataset: share of values whose last edit predates their creation."""
     counts = (
-        values.groupBy("dataset_id", "org_unit_id")
-        .agg(
-            F.count("*").alias("total"),
-            F.sum((F.col("last_updated") < F.col("created")).cast("int")).alias("bad"),
-        )
+        last_updated_counts(values)
         .filter(F.col("bad") > 0)
         .join(F.broadcast(_facility_names(units)), "org_unit_id", "left")
     )
@@ -45,8 +49,9 @@ def last_updated_before_created_findings(values: DataFrame, units: DataFrame) ->
     )
 
 
-def entered_before_period_end_findings(reports: DataFrame) -> DataFrame:
-    counts = (
+def early_entry_counts(reports: DataFrame) -> DataFrame:
+    """Per facility and dataset: received reports entered before their month ended."""
+    return (
         reports.filter("reported")
         .groupBy("dataset_id", *FACILITY_NAMES)
         .agg(
@@ -54,8 +59,11 @@ def entered_before_period_end_findings(reports: DataFrame) -> DataFrame:
             F.sum(F.col("entered_before_period_end").cast("int")).alias("early"),
             F.min("days_after_period_end").alias("earliest"),
         )
-        .filter(F.col("early") > 0)
     )
+
+
+def entered_before_period_end_findings(reports: DataFrame) -> DataFrame:
+    counts = early_entry_counts(reports).filter(F.col("early") > 0)
     return to_findings(
         counts,
         check="entered_before_period_end",
@@ -84,6 +92,28 @@ def missing_coordinates_findings(units: DataFrame, assignments: DataFrame) -> Da
         dimension=Dimension.SYSTEM,
         severity=Severity.LOW,
         message=F.lit("No GPS coordinates: the facility can't be shown on the map"),
+    )
+
+
+def non_facility_assignment_findings(
+    assignments: DataFrame, units: DataFrame, datasets_in_scope: DataFrame
+) -> DataFrame:
+    """Datasets assigned to org units that aren't facilities (a configuration error)."""
+    wrong = (
+        assignments.join(datasets_in_scope, "dataset_id")
+        .join(units.filter(~F.col("is_facility")), "org_unit_id")
+        .withColumn("facility", F.col("name"))
+    )
+    return to_findings(
+        wrong,
+        check="non_facility_assignment",
+        dimension=Dimension.SYSTEM,
+        severity=Severity.LOW,
+        message=F.format_string(
+            "Dataset assigned to %s (level %d), which isn't a facility; excluded from completeness",
+            "name",
+            "level",
+        ),
     )
 
 
@@ -135,16 +165,14 @@ def repeated_values_findings(
     )
 
 
-def repeats_last_year_findings(
-    facility_months: DataFrame, rules: DQRules = DEFAULT_RULES
-) -> DataFrame:
-    """Facility-years where most values equal the same month of the previous year."""
+def copy_counts(facility_months: DataFrame) -> DataFrame:
+    """Per facility, dataset and year: non-zero values identical to the same month last year."""
     keys = ["dataset_id", "org_unit_id", "data_element_id", "month"]
     with_month = facility_months.withColumn("month", F.substring("period", 5, 2))
     last_year = with_month.select(
         *keys, (F.col("year") + 1).alias("year"), F.col("value").alias("last_year_value")
     )
-    compared = (
+    return (
         with_month.join(last_year, [*keys, "year"])
         .filter(F.col("value") > 0)  # zeros repeat naturally
         .groupBy("dataset_id", *FACILITY_NAMES, "year")
@@ -152,6 +180,15 @@ def repeats_last_year_findings(
             F.count("*").alias("compared"),
             F.sum((F.col("value") == F.col("last_year_value")).cast("int")).alias("identical"),
         )
+    )
+
+
+def repeats_last_year_findings(
+    facility_months: DataFrame, rules: DQRules = DEFAULT_RULES
+) -> DataFrame:
+    """Facility-years where most values equal the same month of the previous year."""
+    compared = (
+        copy_counts(facility_months)
         .withColumn("share", F.col("identical") / F.col("compared"))
         .filter((F.col("compared") >= rules.copy_min_months) & (F.col("share") >= rules.copy_share))
         .withColumn("period", F.col("year").cast("string"))
