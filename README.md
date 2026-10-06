@@ -10,7 +10,7 @@ shows the results on an interactive map dashboard.
 
 1. [x] Foundation: project layout, config, DHIS2 extraction client
 2. [x] Data lake: S3-compatible object store (SeaweedFS), bronze layer
-3. [ ] PySpark transforms: silver and gold tables
+3. [x] PySpark transforms: silver and gold tables
 4. [ ] Data quality engine: WHO DQR metrics at scale
 5. [ ] ML: anomaly detection and forecasting vs. baseline
 6. [ ] Dashboard: choropleth map and drill-down
@@ -38,6 +38,22 @@ hmis-dq extract --start 2023-01 # DHIS2 -> bronze bucket (resumable)
 hmis-dq lake status             # what's in the lake
 hmis-dq lake upload             # copy a local data/raw folder into the lake
 ```
+
+Spark jobs run in a container next to the lake:
+
+```bash
+docker compose build spark spark-test
+docker compose run --rm spark hmis-dq spark build   # bronze -> silver -> gold
+docker compose run --rm spark-test                  # Spark unit tests (Linux)
+```
+
+## Lake layout
+
+| Layer | Bucket | Contents |
+|---|---|---|
+| Bronze | `bronze` | DHIS2 responses exactly as received (gzipped JSON) plus lineage metadata |
+| Silver | `silver` | Typed Parquet: `data_values` (with a parse status per value), org units with hierarchy and coordinates, data elements, datasets, dataset assignments |
+| Gold | `gold` | `facility_month`, `reporting` (one row per *expected* report, received or not), `district_month` with completeness |
 
 Extraction pulls one chunk per dataset x district x month, in parallel. Re-runs
 skip chunks already stored and re-fetch only the last few months, where late

@@ -270,5 +270,36 @@ def spark_silver() -> None:
     console.print(f"Duplicates removed: {result.duplicates_removed:,}")
 
 
+@spark_app.command("gold")
+def spark_gold() -> None:
+    """Build the gold layer from silver: facility_month, reporting, district_month."""
+    from hmis_dq.spark.gold import run_gold  # noqa: PLC0415  (pyspark only needed here)
+
+    settings = get_settings()
+    with console.status("Building gold tables..."):
+        result = run_gold(settings)
+
+    table = Table(title=f"Gold layer: s3a://{settings.gold_bucket}/dhis2/")
+    table.add_column("table")
+    table.add_column("rows", justify="right")
+    for name, rows in result.row_counts.items():
+        table.add_row(name, f"{rows:,}")
+    console.print(table)
+
+    completeness = Table(title="Reporting completeness (whole window)")
+    for column in ("dataset", "expected", "received", "completeness"):
+        completeness.add_column(column, justify="left" if column == "dataset" else "right")
+    for dataset, expected, received, rate in result.completeness:
+        completeness.add_row(dataset, f"{expected:,}", f"{received:,}", f"{rate:.1%}")
+    console.print(completeness)
+
+
+@spark_app.command("build")
+def spark_build() -> None:
+    """Run the whole Spark pipeline: silver, then gold."""
+    spark_silver()
+    spark_gold()
+
+
 if __name__ == "__main__":
     app()
