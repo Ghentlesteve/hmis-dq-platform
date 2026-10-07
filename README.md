@@ -125,3 +125,8 @@ reports still arrive.
 
 Development uses the public DHIS2 demo database (synthetic data modelled on
 Sierra Leone). No real patient or national HMIS data is stored in this repository.
+
+## License
+
+[MIT](LICENSE) © 2026 Kwenev Stephen. A personal project built on the public DHIS2 demo
+server; not affiliated with or endorsed by any organisation.
