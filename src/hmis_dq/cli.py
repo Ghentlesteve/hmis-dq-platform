@@ -30,6 +30,8 @@ lake_app = typer.Typer(help="Manage the S3 data lake.", no_args_is_help=True)
 app.add_typer(lake_app, name="lake")
 spark_app = typer.Typer(help="Spark jobs (run inside the spark container).", no_args_is_help=True)
 app.add_typer(spark_app, name="spark")
+ml_app = typer.Typer(help="Forecasting and anomaly detection (runs locally).", no_args_is_help=True)
+app.add_typer(ml_app, name="ml")
 console = Console()
 
 StoreOption = Annotated[
@@ -347,6 +349,41 @@ def spark_build() -> None:
     spark_silver()
     spark_gold()
     spark_dq()
+
+
+@ml_app.command("backtest")
+def ml_backtest(
+    test_months: Annotated[int, typer.Option(min=3, max=24, help="Months to replay.")] = 12,
+) -> None:
+    """Backtest the forecasting models against the seasonal-naive benchmark."""
+    import pandas as pd  # noqa: PLC0415  (needs the ml extra)
+
+    from hmis_dq.ml.job import run_forecast_backtest  # noqa: PLC0415
+
+    settings = get_settings()
+    with console.status("Backtesting forecasting models..."):
+        result = run_forecast_backtest(settings, test_months)
+
+    console.print(
+        f"{result.series} district x indicator series, last {test_months} months replayed"
+    )
+    for dataset_id, rows in result.summary.groupby("dataset_id"):
+        table = Table(title=f"{dataset_id}: one-month-ahead forecasts vs seasonal naive")
+        for column in ("model", "series", "median skill", "beats benchmark", "median sMAPE"):
+            table.add_column(column, justify="left" if column == "model" else "right")
+        for row in rows.to_dict("records"):
+            skill = row["median_skill"]
+            table.add_row(
+                str(row["model"]),
+                str(row["series"]),
+                "-" if pd.isna(skill) else f"{skill:+.2f}",
+                f"{row['beats_benchmark']:.0%}",
+                f"{row['median_smape']:.1f}%",
+            )
+        console.print(table)
+    console.print(
+        "skill = 1 - MAE(model) / MAE(same month last year); above 0 beats the benchmark."
+    )
 
 
 if __name__ == "__main__":

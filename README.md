@@ -12,7 +12,7 @@ shows the results on an interactive map dashboard.
 2. [x] Data lake: S3-compatible object store (SeaweedFS), bronze layer
 3. [x] PySpark transforms: silver and gold tables
 4. [x] Data quality engine: WHO DQR metrics at scale
-5. [ ] ML: anomaly detection and forecasting vs. baseline
+5. [ ] ML: forecasting vs. baselines (done), anomaly detection, early warning
 6. [ ] Dashboard: choropleth map and drill-down
 7. [ ] NiFi ingestion flow
 8. [ ] Kubernetes deployment and CI
@@ -108,6 +108,33 @@ Run over 1,021,137 values from 1,169 facilities, January 2023 to September 2026.
    no district total shows it.
 5. **Configuration issues.** 5 dataset assignments point at districts or the whole
    country instead of facilities, and 48% of facilities have no GPS coordinates.
+
+## Forecasting (honest baselines)
+
+`hmis-dq ml backtest` replays the last 12 months for 91 district x tracer-indicator
+series: for each month, every model is trained only on earlier data and asked to
+predict it. Models are judged by **skill** against the standard benchmark,
+"same month last year": `1 - MAE(model) / MAE(seasonal naive)`, so above 0 beats it.
+
+| Model | Child Health: median skill | Reproductive Health: median skill |
+|---|---|---|
+| seasonal naive (same month last year) | **0.00** (benchmark, 2.3% error) | **0.00** (2.1% error) |
+| same month two years earlier | -0.31 | - |
+| Holt-Winters exponential smoothing | -0.31 | - (needs 2 years of history) |
+| gradient boosting on the change from last year | -0.78 | -1.68 |
+| gradient boosting on lag features | -1.29 | -2.92 |
+| mean of last 3 months | -5.86 | -4.75 |
+| last month | -7.39 | -4.27 |
+
+No model beats the benchmark, and that is the finding. Routine monthly counts
+normally differ 10-20% from the year before; here last year predicts this year
+to within ~2%, because most values are copies (see the data quality findings).
+When the data is a copy, the copy is the best forecast, and every model that
+learns from history can only add noise. Gradient boosting improved most when
+it was set up to predict the *change* from last year rather than the value, the
+standard way to build the benchmark into a model.
+
+The same backtest is what decides which model to trust on real data.
 
 ## Lake layout
 
