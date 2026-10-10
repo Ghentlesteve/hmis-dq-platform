@@ -90,3 +90,14 @@ class Severity:
     HIGH = "high"
     MEDIUM = "medium"
     LOW = "low"
+
+
+# Scores (see scores.py). Here rather than there so that code without Spark
+# (the dashboard) can use them.
+DIMENSION_WEIGHTS: dict[str, float] = {
+    "completeness": 0.35,
+    "accuracy": 0.25,
+    "consistency": 0.20,
+    "integrity": 0.20,
+}
+GRADES = ((90, "A"), (75, "B"), (60, "C"))  # below the last: D

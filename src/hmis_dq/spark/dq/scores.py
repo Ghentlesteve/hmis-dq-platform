@@ -21,16 +21,9 @@ District scores weight each facility by the reports it was expected to send.
 from pyspark.sql import Column, DataFrame
 from pyspark.sql import functions as F
 
-from hmis_dq.spark.dq.rules import Dimension, Severity
+from hmis_dq.spark.dq.rules import DIMENSION_WEIGHTS, GRADES, Dimension, Severity
 
-DIMENSION_WEIGHTS: dict[str, float] = {
-    "completeness": 0.35,
-    "accuracy": 0.25,
-    "consistency": 0.20,
-    "integrity": 0.20,
-}
 OUTLIER_WEIGHTS = {Severity.HIGH: 1.0, Severity.MEDIUM: 0.5, Severity.LOW: 0.1}
-GRADES = ((90, "A"), (75, "B"), (60, "C"))  # below the last: D
 
 KEY = ["dataset_id", "org_unit_id"]
 

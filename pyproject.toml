@@ -38,8 +38,13 @@ ml = [
     "scikit-learn>=1.5",
     "statsmodels>=0.14",
 ]
+dashboard = [
+    "hmis-dq[explore]",
+    "streamlit>=1.50",
+    "plotly>=6.0",
+]
 dev = [
-    "hmis-dq[spark,explore,ml]",
+    "hmis-dq[spark,explore,ml,dashboard]",
     "nbclient>=0.10",
     "nbformat>=5.10",
     "boto3-stubs[s3]>=1.35",
@@ -87,5 +92,5 @@ mypy_path = "src"
 
 [[tool.mypy.overrides]]
 # these libraries ship without type information
-module = ["sklearn.*", "statsmodels.*"]
+module = ["sklearn.*", "statsmodels.*", "plotly.*"]
 ignore_missing_imports = true

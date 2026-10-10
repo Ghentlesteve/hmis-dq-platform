@@ -1,8 +1,11 @@
 """Command-line entry point: ``hmis-dq <command>``."""
 
 import logging
+import subprocess
+import sys
 from collections import Counter
 from datetime import date
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -475,3 +478,13 @@ def ml_early_warning() -> None:
 
 if __name__ == "__main__":
     app()
+
+
+@app.command()
+def dashboard(
+    port: Annotated[int, typer.Option(help="Port to serve the dashboard on.")] = 8501,
+) -> None:
+    """Open the data quality dashboard (Streamlit) in the browser."""
+    app_path = Path(__file__).parent / "dashboard" / "app.py"
+    command = [sys.executable, "-m", "streamlit", "run", str(app_path), "--server.port", str(port)]
+    raise typer.Exit(subprocess.call(command))

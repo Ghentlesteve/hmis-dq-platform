@@ -1,0 +1,11 @@
+# Streamlit settings (read from the folder the dashboard is started in)
+# Blue accent, not the default red: red reads as "bad" on score bars.
+# Set per mode so the dashboard still follows the viewer's light/dark setting.
+[theme.light]
+primaryColor = "#2a78d6"
+
+[theme.dark]
+primaryColor = "#2a78d6"
+
+[browser]
+gatherUsageStats = false
