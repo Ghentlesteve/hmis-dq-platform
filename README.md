@@ -12,7 +12,7 @@ shows the results on an interactive map dashboard.
 2. [x] Data lake: S3-compatible object store (SeaweedFS), bronze layer
 3. [x] PySpark transforms: silver and gold tables
 4. [x] Data quality engine: WHO DQR metrics at scale
-5. [ ] ML: forecasting vs. baselines (done), anomaly detection, early warning
+5. [ ] ML: forecasting vs. baselines (done), anomaly detection (done), early warning
 6. [ ] Dashboard: choropleth map and drill-down
 7. [ ] NiFi ingestion flow
 8. [ ] Kubernetes deployment and CI
@@ -135,6 +135,33 @@ it was set up to predict the *change* from last year rather than the value, the
 standard way to build the benchmark into a model.
 
 The same backtest is what decides which model to trust on real data.
+
+## Anomaly detection (what the rules miss)
+
+`hmis-dq ml anomalies` looks at each facility-month as a *profile* across nine
+immunisation antigens. Each antigen is expressed relative to the facility's own
+usual level, so facilities compare by shape, not size, and an Isolation Forest
+flags the most unusual 1%, with a plain-language reason.
+
+On 9,289 facility-months it flagged 91, from just 18 facilities:
+
+| Pattern | Rules rated high | Rules rated low | **Rules missed** |
+|---|---|---|---|
+| most antigens far **below** usual | 0 | 16 | **30** |
+| most antigens far **above** usual | 4 | 19 | 0 |
+| antigens out of step | 7 | 8 | 7 |
+
+The model adds most where it matters most: **drops** across several antigens at
+once, the signature of a stock-out or missed outreach session. Single-indicator
+outlier checks are biased towards spikes (a count can't fall below zero, so a drop
+rarely reaches 3 SD), while several antigens falling together is rare enough for the
+forest to isolate. It also upgrades findings the rules rated low, e.g. Measles 684
+and Penta3 557 in one month at a facility that usually reports 10-20.
+
+A first version missed a planted single-antigen typo (ranked 159th): an Isolation
+Forest splits on one random column at a time. Adding three summaries of each profile
+(mean, largest and spread of the deviations) fixed it, and the tests plant known
+problems to keep it that way.
 
 ## Lake layout
 
