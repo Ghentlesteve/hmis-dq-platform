@@ -386,5 +386,37 @@ def ml_backtest(
     )
 
 
+@ml_app.command("anomalies")
+def ml_anomalies(
+    show: Annotated[int, typer.Option(min=1, max=50, help="How many anomalies to list.")] = 10,
+) -> None:
+    """Find unusual facility-months across all antigens (Isolation Forest)."""
+    from hmis_dq.ml.job import run_anomaly_detection  # noqa: PLC0415  (needs the ml extra)
+
+    with console.status("Scoring facility-months..."):
+        result = run_anomaly_detection(get_settings())
+
+    found = result.anomalies
+    console.print(
+        f"{result.profiles:,} facility-months scored; [bold]{len(found)}[/] flagged as anomalies. "
+        f"{result.caught_by_rules:.0%} also have a rule-based outlier that month "
+        f"({result.caught_strongly:.0%} a high/medium one)."
+    )
+    table = Table(title="Most unusual facility-months")
+    for column in ("facility", "district", "period", "score", "rules", "why"):
+        table.add_column(column, overflow="fold")
+    for row in found.head(show).to_dict("records"):
+        rules = row["rule_severity"] if isinstance(row["rule_severity"], str) else "[yellow]new[/]"
+        table.add_row(
+            str(row["facility"]),
+            str(row["district"]),
+            str(row["period"]),
+            f"{row['anomaly_score']:.2f}",
+            rules,
+            str(row["explanation"]),
+        )
+    console.print(table)
+
+
 if __name__ == "__main__":
     app()

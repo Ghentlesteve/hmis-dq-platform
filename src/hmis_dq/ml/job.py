@@ -1,4 +1,5 @@
-"""Forecast backtest job: gold.district_month -> gold/dhis2/ml/ (via DuckDB, no Spark).
+"""ML jobs over the gold layer -> gold/dhis2/ml/ (via DuckDB, no Spark): forecast
+backtest and anomaly detection.
 
 The series are small (districts x tracer indicators, at most a few years of
 months), so pandas and scikit-learn are the right tools here; Spark is kept for
@@ -12,6 +13,7 @@ import pandas as pd
 
 from hmis_dq.config import Settings
 from hmis_dq.explore import gold, lake
+from hmis_dq.ml.anomaly import ANTIGENS, deviation_profiles, explain, score_anomalies
 from hmis_dq.ml.forecast import (
     LOCAL_MODELS,
     backtest_gbm,
@@ -90,3 +92,61 @@ def run_forecast_backtest(settings: Settings, test_months: int = 12) -> Forecast
     _write(db, metrics, settings, "forecast_metrics")
     _write(db, summary, settings, "forecast_summary")
     return ForecastResult(series=panel.groupby(SERIES_KEYS).ngroups, summary=summary)
+
+
+# ---------------------------------------------------------------- anomalies
+
+
+@dataclass(frozen=True)
+class AnomalyResult:
+    profiles: int
+    anomalies: pd.DataFrame  # flagged facility-months, most unusual first
+    caught_by_rules: float  # share of anomalies with any rule-based outlier that month
+    caught_strongly: float  # ... with a high/medium outlier
+
+
+def compare_with_rules(anomalies: pd.DataFrame, outliers: pd.DataFrame) -> pd.DataFrame:
+    """Mark each anomaly with the strongest rule-based outlier at the same facility-month."""
+    rank = {"high": 3, "medium": 2, "low": 1}
+    strongest = (
+        outliers.assign(rank=outliers["severity"].map(rank))
+        .sort_values("rank", ascending=False)
+        .drop_duplicates(["org_unit_id", "period"])[["org_unit_id", "period", "severity"]]
+        .rename(columns={"severity": "rule_severity"})
+    )
+    return anomalies.merge(strongest, on=["org_unit_id", "period"], how="left")
+
+
+def run_anomaly_detection(settings: Settings) -> AnomalyResult:
+    db = lake(settings)
+    placeholders = ", ".join("?" for _ in ANTIGENS)
+    facility_months = db.execute(
+        f"""
+        SELECT org_unit_id, facility, district, period, data_element, value
+        FROM {gold("facility_month")} WHERE data_element IN ({placeholders})
+        """,
+        list(ANTIGENS),
+    ).df()
+    outliers = db.execute(
+        f"""
+        SELECT org_unit_id, period, severity FROM {gold("dq/findings")}
+        WHERE "check" = 'outlier' AND data_element IN ({placeholders})
+        """,
+        list(ANTIGENS),
+    ).df()
+
+    scored = score_anomalies(deviation_profiles(facility_months))
+    flagged = scored[scored["is_anomaly"]].copy()
+    flagged["explanation"] = flagged.apply(explain, axis=1)
+    flagged = compare_with_rules(flagged, outliers)
+
+    _write(db, scored, settings, "anomaly_scores")
+    _write(db, flagged, settings, "anomalies")
+    caught = flagged["rule_severity"].notna()
+    strong = flagged["rule_severity"].isin(["high", "medium"])
+    return AnomalyResult(
+        profiles=len(scored),
+        anomalies=flagged,
+        caught_by_rules=float(caught.mean()) if len(flagged) else 0.0,
+        caught_strongly=float(strong.mean()) if len(flagged) else 0.0,
+    )
