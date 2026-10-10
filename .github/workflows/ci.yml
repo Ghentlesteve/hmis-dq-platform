@@ -27,7 +27,8 @@ permissions:
 
 env:
   PYTHON_VERSION: "3.12"
-  FORCE_COLOR: "1"
+  # (no FORCE_COLOR: it makes Rich put colour codes inside the CLI's output,
+  # which breaks the CLI tests' text checks)
 
 jobs:
   lint:
