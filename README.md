@@ -1,5 +1,7 @@
 # HMIS Data Quality & Early-Warning Platform
 
+[![CI](https://github.com/Ghentlesteve/hmis-dq-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/Ghentlesteve/hmis-dq-platform/actions/workflows/ci.yml)
+
 End-to-end pipeline that pulls routine health data from DHIS2, scores it against the
 WHO Data Quality Review framework, detects anomalies, forecasts key indicators and
 shows the results on an interactive map dashboard.
@@ -15,7 +17,7 @@ shows the results on an interactive map dashboard.
 5. [x] ML: forecasting vs. baselines, anomaly detection, early warning
 6. [x] Dashboard: district map and drill-down (Streamlit, in Docker)
 7. [ ] NiFi ingestion flow (built and unit-tested; first live run pending)
-8. [ ] Kubernetes deployment and CI
+8. [ ] Kubernetes deployment and CI (CI done: GitHub Actions)
 
 ## Local setup
 
@@ -288,6 +290,22 @@ NiFi's UI is at https://localhost:18443/nifi (a self-signed certificate: the
 browser warns once). Status: the processors and the deployer are unit-tested
 (against a fake NiFi that enforces the real API's validation rules); the first
 run against a live NiFi is still to come.
+
+## Continuous integration
+
+Every push to `main` and every pull request runs three GitHub Actions jobs
+(`.github/workflows/ci.yml`):
+
+| Job | What it proves |
+|---|---|
+| `lint` | ruff: style and common bugs |
+| `test` | mypy strict, then **every** test: Spark runs natively on Java 21, and the integration tests use the real lake, started with `docker compose` |
+| `docker` | the dashboard image builds (layer cache kept between runs), starts next to the lake and reports healthy |
+
+Locally, tests that need something missing (Spark on some Windows setups, a stopped
+lake) skip themselves. CI sets `HMIS_FAIL_ON_SKIP=1`, which turns any skip into a
+failure, so a green badge means nothing was quietly left out. Test coverage is
+shown on each run's summary page.
 
 ## Lake layout
 

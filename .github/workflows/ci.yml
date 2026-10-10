@@ -1,0 +1,127 @@
+# Continuous integration: every push to main and every pull request.
+#
+#   lint    ruff (style and common bugs), in seconds
+#   test    mypy, then every test: Spark runs natively (Java 21) and the
+#           integration tests use the real lake, started with docker compose.
+#           Any skipped test fails the run (HMIS_FAIL_ON_SKIP).
+#   docker  build the dashboard image, start it next to the lake, check health
+#
+# Nothing here touches DHIS2 or needs a secret: the lake's keys are generated
+# for each run, and the DHIS2 settings are placeholders the tests never call.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# a newer push to the same branch cancels the run it makes obsolete
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+  FORCE_COLOR: "1"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install "ruff>=0.6"
+      - name: Lint
+        run: ruff check --output-format=github src tests docs nifi
+      - name: Formatting
+        run: ruff format --check src tests docs nifi
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      HMIS_FAIL_ON_SKIP: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - uses: actions/setup-java@v5 # Spark 4 runs on Java 17+; the Spark image uses 21
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: Settings for this run
+        run: |
+          cat > .env <<EOF
+          HMIS_DHIS2_BASE_URL=https://dhis2.invalid
+          HMIS_DHIS2_USERNAME=ci
+          HMIS_DHIS2_PASSWORD=ci
+          HMIS_S3_ENDPOINT_URL=http://localhost:8333
+          HMIS_S3_ACCESS_KEY=hmis-ci
+          HMIS_S3_SECRET_KEY=$(openssl rand -hex 24)
+          EOF
+      - name: Start the lake
+        run: |
+          docker compose up -d --wait lake
+          docker compose run --rm lake-init
+      - name: Type check
+        run: mypy src tests
+      - name: Tests
+        run: pytest -p no:cacheprovider --cov=hmis_dq --cov-report=term --cov-report=xml
+      - name: Coverage summary
+        if: always()
+        run: |
+          if [ -f coverage.xml ]; then
+            coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Lake logs (on failure)
+        if: failure()
+        run: docker compose logs lake
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the dashboard image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/dashboard.Dockerfile
+          tags: hmis-dq-dashboard:dev
+          load: true # keep it in this runner's Docker for the next step
+          cache-from: type=gha,scope=dashboard
+          cache-to: type=gha,scope=dashboard,mode=max
+      - name: Settings for this run
+        run: |
+          cat > .env <<EOF
+          HMIS_DHIS2_BASE_URL=https://dhis2.invalid
+          HMIS_DHIS2_USERNAME=ci
+          HMIS_DHIS2_PASSWORD=ci
+          HMIS_S3_ACCESS_KEY=hmis-ci
+          HMIS_S3_SECRET_KEY=$(openssl rand -hex 24)
+          EOF
+      - name: Start the lake and the dashboard
+        # --wait returns once both report healthy (the dashboard's own HEALTHCHECK)
+        run: docker compose up -d --wait --no-build lake dashboard
+      - name: Smoke test
+        run: |
+          test "$(curl -fsS http://localhost:8501/_stcore/health)" = "ok"
+          curl -fsS http://localhost:8501/ | grep -q "<title>"
+          docker image ls hmis-dq-dashboard:dev --format "Image size: {{.Size}}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Logs (on failure)
+        if: failure()
+        run: docker compose logs
