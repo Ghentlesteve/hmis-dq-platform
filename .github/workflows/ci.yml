@@ -34,8 +34,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - run: pip install "ruff>=0.6"
@@ -50,13 +50,13 @@ jobs:
     env:
       HMIS_FAIL_ON_SKIP: "1"
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: pyproject.toml
-      - uses: actions/setup-java@v5 # Spark 4 runs on Java 17+; the Spark image uses 21
+      - uses: actions/setup-java@v6 # Spark 4 runs on Java 17+; the Spark image uses 21
         with:
           distribution: temurin
           java-version: "21"
@@ -79,12 +79,20 @@ jobs:
       - name: Type check
         run: mypy src tests
       - name: Tests
-        run: pytest -p no:cacheprovider --cov=hmis_dq --cov-report=term --cov-report=xml
-      - name: Coverage summary
-        if: always()
         run: |
-          if [ -f coverage.xml ]; then
-            coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
+          set -o pipefail
+          pytest -p no:cacheprovider -rfEs --cov=hmis_dq --cov-report=term --cov-report=xml \
+            2>&1 | tee pytest-output.txt
+      - name: Coverage summary
+        if: success()
+        run: coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
+      - name: Test failures in the summary
+        # job logs need a GitHub login; the run's summary page doesn't
+        if: failure()
+        run: |
+          if [ -f pytest-output.txt ]; then
+            { echo '### pytest (last 120 lines)'; echo '```'; tail -n 120 pytest-output.txt; echo '```'; } \
+              >> "$GITHUB_STEP_SUMMARY"
           fi
       - name: Lake logs (on failure)
         if: failure()
@@ -94,10 +102,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
       - name: Build the dashboard image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/dashboard.Dockerfile
