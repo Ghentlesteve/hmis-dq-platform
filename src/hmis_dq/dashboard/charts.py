@@ -5,10 +5,13 @@ coloured is also labelled, so colour is never the only way to read a chart.
 """
 
 import json
+import math
+from typing import Any
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.colors import sample_colorscale
 
 from hmis_dq.dashboard.data import bounds, district_geojson, label_point
 from hmis_dq.spark.dq.rules import DIMENSION_WEIGHTS, GRADES
@@ -42,11 +45,50 @@ DIMENSIONS = {
     "integrity": "Integrity (copies, timestamps)",
 }
 
-_HOVER = (
-    "<b>%{customdata[0]}</b><br>Overall %{customdata[1]:.1f} (grade %{customdata[2]})"
-    "<br>Completeness %{customdata[3]:.1f}%<br>Facilities graded D: %{customdata[4]}"
-    "<extra></extra>"
-)
+
+def _outline(geometry: dict[str, Any]) -> tuple[list[float | None], list[float | None]]:
+    """x (lon) and y (lat) of every polygon's outer ring, separated by gaps, for a
+    filled Scatter trace."""
+    polygons = (
+        geometry["coordinates"] if geometry["type"] == "MultiPolygon" else [geometry["coordinates"]]
+    )
+    xs: list[float | None] = []
+    ys: list[float | None] = []
+    for polygon in polygons:
+        for lon, lat, *_ in polygon[0]:
+            xs.append(lon)
+            ys.append(lat)
+        xs.append(None)
+        ys.append(None)
+    return xs, ys
+
+
+def _as_map(fig: go.Figure, geojson: dict[str, Any], pad: float, height: int) -> go.Figure:
+    """Plain x/y axes as a map: longitude across, latitude up, true proportions.
+
+    Shapes are drawn as filled outlines rather than with Plotly's geo maps, which
+    download a world map from the internet before drawing anything: slow on a
+    weak connection, and blank with none.
+    """
+    (west, south), (east, north) = bounds(geojson)
+    margin = pad * max(east - west, north - south)
+    hidden = {"visible": False, "fixedrange": True}
+    fig.update_xaxes(range=[west - margin, east + margin], **hidden)
+    fig.update_yaxes(
+        range=[south - margin, north + margin],
+        # a degree of longitude is shorter than one of latitude away from the equator
+        scaleanchor="x",
+        scaleratio=1 / math.cos(math.radians((south + north) / 2)),
+        **hidden,
+    )
+    fig.update_layout(
+        height=height,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        dragmode=False,
+        hovermode="closest",
+    )
+    return fig
 
 
 def district_map(
@@ -63,6 +105,8 @@ def district_map(
     every Child Health district is graded D, so colouring by grade would paint one
     flat colour; distance from national shows where to look first. Each district
     is labelled with its score and grade, so colour is never needed to read it.
+    Clicking a district's label selects it: each label point carries the
+    district_id as customdata.
     """
     geojson = district_geojson(shapes)
     merged = shapes[["district_id", "geometry"]].merge(districts, on="district_id", how="left")
@@ -70,83 +114,110 @@ def district_map(
     gap = scored["overall"] - national_score
     reach = max(1.0, float(np.ceil(gap.abs().max()))) if not gap.empty else 1.0
     middle = MIDPOINT_DARK if dark else MIDPOINT_LIGHT
-    ink = INK_DARK if dark else INK
+    border = middle if dark else BORDER
+    scale = [[0.0, BELOW], [0.5, middle], [1.0, ABOVE]]
+    fills = sample_colorscale(scale, ((gap + reach) / (2 * reach)).clip(0, 1).tolist())
+    hover = [
+        f"<b>{row.district}</b><br>Overall {row.overall:.1f} (grade {row.grade})"
+        f"<br>Completeness {row.completeness:.1f}%<br>Facilities graded D: "
+        f"{row.facilities_grade_d}"
+        for row in scored.itertuples()
+    ]
 
-    fig = go.Figure(
-        go.Choropleth(
-            geojson=geojson,
-            locations=scored["district_id"],
-            z=gap,
-            zmin=-reach,
-            zmax=reach,
-            colorscale=[[0, BELOW], [0.5, middle], [1, ABOVE]],
-            marker={"line": {"color": middle if dark else BORDER, "width": 1.5}},
-            customdata=scored[
-                ["district", "overall", "grade", "completeness", "facilities_grade_d"]
-            ].to_numpy(),
-            hovertemplate=_HOVER,
-            colorbar={
-                "title": {
-                    "text": f"Points below / above the national score ({national_score:.1f})",
-                    "side": "top",
-                },
-                "orientation": "h",
-                "x": 0.5,
-                "xanchor": "center",
-                "y": 0,
-                "yanchor": "top",
-                "len": 0.7,
-                "thickness": 12,
-                "outlinewidth": 0,
-                "tickvals": [-reach, 0, reach],
-                "ticktext": [f"-{reach:.0f}", "national", f"+{reach:.0f}"],
-            },
-        )
-    )
-    unscored = merged[merged["overall"].isna()]
-    if not unscored.empty:
+    fig = go.Figure()
+    for row, colour, text in zip(scored.itertuples(), fills, hover, strict=True):
+        xs, ys = _outline(json.loads(str(row.geometry)))
         fig.add_trace(
-            go.Choropleth(
-                geojson=geojson,
-                locations=unscored["district_id"],
-                z=[0] * len(unscored),
-                colorscale=[[0, NO_DATA], [1, NO_DATA]],
-                showscale=False,
+            go.Scatter(
+                x=xs,
+                y=ys,
+                fill="toself",
+                fillcolor=colour,
+                mode="lines",
+                line={"color": border, "width": 1.5},
+                hoveron="fills",
+                text=text,
+                hoverinfo="text",
+                showlegend=False,
+            )
+        )
+    for row in merged[merged["overall"].isna()].itertuples():
+        xs, ys = _outline(json.loads(str(row.geometry)))
+        fig.add_trace(
+            go.Scatter(
+                x=xs,
+                y=ys,
+                fill="toself",
+                fillcolor=NO_DATA,
+                mode="lines",
+                line={"color": border, "width": 1.5},
                 hoverinfo="skip",
+                showlegend=False,
             )
         )
 
     points = [label_point(json.loads(g)) for g in scored["geometry"]]
     fig.add_trace(
-        go.Scattergeo(
-            lon=[p[0] for p in points],
-            lat=[p[1] for p in points],
+        go.Scatter(
+            x=[p[0] for p in points],
+            y=[p[1] for p in points],
             text=[
                 f"<b>{row.district}</b><br>{row.overall:.1f} · {row.grade}"
                 for row in scored.itertuples()
             ],
-            mode="text",
-            textfont={"size": 11, "color": ink, "shadow": "auto"},
+            mode="markers+text",
+            # an invisible marker under each label, so the label can be clicked
+            marker={"size": 34, "opacity": 0},
+            textfont={"size": 11, "color": INK_DARK if dark else INK, "shadow": "auto"},
+            customdata=scored[["district_id"]].to_numpy(),
+            hovertext=hover,
+            hoverinfo="text",
+            showlegend=False,
+        )
+    )
+    # the colour key: an empty trace that only draws its colour bar
+    fig.add_trace(
+        go.Scatter(
+            x=[None],
+            y=[None],
+            mode="markers",
+            marker={
+                "colorscale": scale,
+                "cmin": -reach,
+                "cmax": reach,
+                "color": [0],
+                "showscale": True,
+                "colorbar": {
+                    "title": {
+                        "text": f"Points below / above the national score ({national_score:.1f})",
+                        "side": "top",
+                    },
+                    "orientation": "h",
+                    "x": 0.5,
+                    "xanchor": "center",
+                    "y": 0,
+                    "yanchor": "top",
+                    "len": 0.7,
+                    "thickness": 12,
+                    "outlinewidth": 0,
+                    "tickvals": [-reach, 0, reach],
+                    "ticktext": [f"-{reach:.0f}", "national", f"+{reach:.0f}"],
+                },
+            },
             hoverinfo="skip",
             showlegend=False,
         )
     )
-    (west, south), (east, north) = bounds(geojson)
-    pad = 0.03 * max(east - west, north - south)
-    fig.update_geos(
-        projection_type="mercator",
-        lonaxis_range=[west - pad, east + pad],
-        lataxis_range=[south - pad, north + pad],
-        visible=False,
-        bgcolor="rgba(0,0,0,0)",
-    )
-    fig.update_layout(
-        height=height,
-        margin={"l": 0, "r": 0, "t": 0, "b": 70},
-        paper_bgcolor="rgba(0,0,0,0)",
-        dragmode=False,
-    )
-    return fig
+    fig.update_layout(margin={"l": 0, "r": 0, "t": 0, "b": 70})
+    return _as_map(fig, geojson, pad=0.03, height=height)
+
+
+def clicked_district(point: dict[str, Any]) -> str | None:
+    """The district_id a click on the district map points at (its label carries it)."""
+    data = point.get("customdata")
+    if isinstance(data, list):
+        data = data[0] if data else None
+    return str(data) if data else None
 
 
 def dimension_bars(scores: pd.Series) -> go.Figure:
@@ -200,15 +271,17 @@ def facility_map(
     points coloured by grade."""
     geojson = district_geojson(outline)
     middle = MIDPOINT_DARK if dark else MIDPOINT_LIGHT
+    xs, ys = _outline(geojson["features"][0]["geometry"])
     fig = go.Figure(
-        go.Choropleth(
-            geojson=geojson,
-            locations=outline["district_id"],
-            z=[0],
-            colorscale=[[0, middle], [1, middle]],
-            showscale=False,
-            marker={"line": {"color": NO_DATA, "width": 1}},
+        go.Scatter(
+            x=xs,
+            y=ys,
+            fill="toself",
+            fillcolor=middle,
+            mode="lines",
+            line={"color": NO_DATA, "width": 1},
             hoverinfo="skip",
+            showlegend=False,
         )
     )
     placed = facilities.dropna(subset=["longitude", "latitude"])
@@ -217,37 +290,21 @@ def facility_map(
         if rows.empty:
             continue
         fig.add_trace(
-            go.Scattergeo(
-                lon=rows["longitude"],
-                lat=rows["latitude"],
+            go.Scatter(
+                x=rows["longitude"],
+                y=rows["latitude"],
                 mode="markers",
                 name=GRADE_MEANING[grade],
-                marker={
-                    "size": 10,
-                    "color": colour,
-                    "line": {"color": middle, "width": 1.5},
-                },
+                marker={"size": 10, "color": colour, "line": {"color": middle, "width": 1.5}},
                 customdata=rows[["facility", "overall", "grade", "completeness"]].to_numpy(),
                 hovertemplate=_FACILITY_HOVER,
             )
         )
-    (west, south), (east, north) = bounds(geojson)
-    pad = 0.05 * max(east - west, north - south)
-    fig.update_geos(
-        projection_type="mercator",
-        lonaxis_range=[west - pad, east + pad],
-        lataxis_range=[south - pad, north + pad],
-        visible=False,
-        bgcolor="rgba(0,0,0,0)",
-    )
     fig.update_layout(
-        height=height,
         margin={"l": 0, "r": 0, "t": 0, "b": 0},
-        paper_bgcolor="rgba(0,0,0,0)",
         legend={"title": {"text": "Facility grade"}, "orientation": "h", "y": 0, "x": 0},
-        dragmode=False,
     )
-    return fig
+    return _as_map(fig, geojson, pad=0.05, height=height)
 
 
 def findings_bars(counts: pd.DataFrame) -> go.Figure:

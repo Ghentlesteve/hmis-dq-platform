@@ -13,7 +13,7 @@ shows the results on an interactive map dashboard.
 3. [x] PySpark transforms: silver and gold tables
 4. [x] Data quality engine: WHO DQR metrics at scale
 5. [x] ML: forecasting vs. baselines, anomaly detection, early warning
-6. [ ] Dashboard: choropleth map and drill-down
+6. [x] Dashboard: district map and drill-down (Streamlit, in Docker)
 7. [ ] NiFi ingestion flow
 8. [ ] Kubernetes deployment and CI
 
@@ -26,9 +26,22 @@ python -m venv .venv
 .venv\Scripts\activate          # Windows
 pip install -e ".[dev]"
 copy .env.example .env          # then fill in the values
-docker compose up -d            # start the local S3 data lake
+docker compose up -d            # start the local S3 data lake and the dashboard
 pytest                          # unit tests + lake integration test
 ```
+
+Local addresses once it's running:
+
+| What | Address |
+|---|---|
+| Dashboard | http://localhost:8501 |
+| Lake S3 API (for code) | http://localhost:8333 |
+| Lake file browser | http://localhost:18888 |
+| Lake cluster status | http://localhost:19333 |
+
+Windows reserves blocks of ports (Hyper-V/WSL) that can change after a reboot. If
+one of these is taken, pick another in `.env` (`HMIS_DASHBOARD_PORT`,
+`HMIS_S3_PORT`, `HMIS_FILER_PORT`, `HMIS_MASTER_PORT`; see `.env.example`).
 
 ## Usage
 
@@ -198,6 +211,44 @@ errors, and copied values make those errors tiny; on real data they widen
 accordingly. A 5th-percentile bound also means about 1 in 20 normal district-months
 falls below it by chance, which is why small shortfalls are graded medium.
 
+## Dashboard
+
+`docker compose up -d` starts a Streamlit dashboard next to the lake, at
+http://localhost:8501. It reads the gold and ML tables straight from the lake with
+DuckDB (no Spark), so it runs in an image of its own
+(`docker/dashboard.Dockerfile`), the same one the Kubernetes deployment will use.
+
+![National overview: districts coloured by distance from the national score](docs/images/dashboard-overview.png)
+
+**National view.** Headline scores for the chosen dataset, a map of districts and
+a ranking, worst first. Every Child Health district is graded D on the demo data,
+so colouring by grade would paint the map one flat red; the map shows each
+district's distance from the national score instead (red below, blue above), and
+every district is labelled with its score and grade, so colour is never needed to
+read it. A bar chart shows where the national score is lost: for Child Health,
+completeness costs 28.7 of the 100 points and integrity (copied values) 18.8.
+
+![District drill-down: facilities, findings and trends with early warnings](docs/images/dashboard-district.png)
+
+**District drill-down.** Click a district on the map (or pick it) to see:
+
+- its facilities on a map coloured by grade, with a count of those that can't be
+  placed because they have no GPS coordinates (63 of 122 in Kenema), and a table,
+  worst first;
+- what the checks found, by check and severity, with the message behind each
+  finding (*"Penta3 doses given (986) exceeds Penta1 doses given (982)"*);
+- monthly trends of the tracer indicators against the same month last year, with
+  early-warning months marked and explained;
+- facility-months flagged by the anomaly model, including those the rules missed.
+
+To work on the dashboard code, run it from the virtual environment instead of the
+container (code changes show up without rebuilding an image):
+
+```bash
+hmis-dq dashboard --port 8502   # 8501 is taken by the container
+docker compose up -d --build dashboard   # rebuild the container after changes
+```
+
 ## Lake layout
 
 | Layer | Bucket | Contents |
@@ -219,8 +270,3 @@ Sierra Leone). No real patient or national HMIS data is stored in this repositor
 
 [MIT](LICENSE) © 2026 Kwenev Stephen. A personal project built on the public DHIS2 demo
 server; not affiliated with or endorsed by any organisation.
-
-
-
-The file browser port is changed to http://localhost:18888 for me due to conflicts i experienced
-

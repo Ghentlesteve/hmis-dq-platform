@@ -11,10 +11,14 @@ import pytest
 pytest.importorskip("streamlit")
 pytest.importorskip("plotly")
 
+import streamlit as st
+from streamlit.testing.v1 import AppTest
+
 from hmis_dq.dashboard import data as dashboard_data
 from hmis_dq.dashboard.charts import (
     GRADE_MEANING,
     NO_DATA,
+    clicked_district,
     dimension_bars,
     district_map,
     facility_map,
@@ -227,13 +231,24 @@ def test_label_sits_on_the_largest_polygon() -> None:
 def test_map_colours_districts_by_distance_from_national(dashboard: DashboardData) -> None:
     fig = district_map(dashboard.districts(CH), dashboard.district_shapes(), national_score=50.0)
 
-    fill, labels = fig.data
-    assert list(fill.locations) == ["d1", "d2"]
-    assert list(fill.z) == [20.0, -10.0]  # Bo 70, Kono 40 vs national 50
-    assert (fill.zmin, fill.zmax) == (-20.0, 20.0)  # symmetric: grey sits at national
-    assert list(fill.colorbar.ticktext) == ["-20", "national", "+20"]
-    assert fig.layout.geo.lonaxis.range == (-0.3, 10.3)  # all shapes, 3% padding
+    bo, kono, labels, key = fig.data
+    # Bo 70 and Kono 40 vs national 50: the scale reaches 20 points each way, so Bo
+    # takes the full "above" blue and Kono sits halfway between grey and red
+    assert bo.fillcolor == "rgb(42, 120, 214)"
+    red, _, blue = (int(c) for c in kono.fillcolor[4:-1].split(","))
+    assert red > blue
+    assert (key.marker.cmin, key.marker.cmax) == (-20.0, 20.0)  # grey sits at national
+    assert list(key.marker.colorbar.ticktext) == ["-20", "national", "+20"]
+    assert fig.layout.xaxis.range == (-0.3, 10.3)  # all shapes, 3% padding
     assert list(labels.text) == ["<b>Bo</b><br>70.0 · C", "<b>Kono</b><br>40.0 · D"]
+    assert labels.customdata.tolist() == [["d1"], ["d2"]]  # what a click reports
+
+
+def test_map_outlines_every_polygon_of_a_district(dashboard: DashboardData) -> None:
+    fig = district_map(dashboard.districts(CH), dashboard.district_shapes(), national_score=50.0)
+
+    kono = fig.data[1]  # two squares: 5 corners each, then a gap
+    assert list(kono.x) == [2, 4, 4, 2, 2, None, 9, 10, 10, 9, 9, None]
 
 
 def test_map_greys_out_districts_without_a_score(dashboard: DashboardData) -> None:
@@ -241,9 +256,14 @@ def test_map_greys_out_districts_without_a_score(dashboard: DashboardData) -> No
 
     fig = district_map(only_bo, dashboard.district_shapes(), national_score=50.0, dark=True)
 
-    assert list(fig.data[1].locations) == ["d2"]
-    assert fig.data[1].colorscale[0][1] == NO_DATA
+    assert fig.data[1].fillcolor == NO_DATA  # Kono
     assert fig.data[2].textfont.color == "#fcfcfb"  # light labels in dark mode
+
+
+def test_a_click_on_a_district_label_gives_its_id() -> None:
+    assert clicked_district({"customdata": ["d1"]}) == "d1"
+    assert clicked_district({"customdata": "d1"}) == "d1"
+    assert clicked_district({"x": 1.0}) is None  # e.g. the colour key
 
 
 def test_grade_meanings_follow_the_thresholds() -> None:
@@ -262,16 +282,19 @@ def test_dimension_bars_show_points_lost(dashboard: DashboardData) -> None:
     assert fig.data[0].text[0] == "50.0  (-17.5 pts)"
 
 
-def test_app_renders_from_the_lake_tables(
-    dashboard: DashboardData, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from streamlit.testing.v1 import AppTest  # noqa: PLC0415
-
+@pytest.fixture
+def app(dashboard: DashboardData, monkeypatch: pytest.MonkeyPatch) -> AppTest:
+    """The Streamlit app reading the tiny lake, with empty caches (Streamlit's
+    caches outlive a test, and would hand back an earlier test's closed connection)."""
+    st.cache_data.clear()
+    st.cache_resource.clear()
     monkeypatch.setattr(dashboard_data, "open_dashboard_data", lambda: dashboard)
-    app = AppTest.from_file(
+    return AppTest.from_file(
         str(Path(dashboard_data.__file__).parent / "app.py"), default_timeout=30
     )
 
+
+def test_app_renders_from_the_lake_tables(app: AppTest) -> None:
     app.run()
 
     assert not app.exception
@@ -334,8 +357,9 @@ def test_facility_map_plots_placed_facilities_by_grade(dashboard: DashboardData)
     fig = facility_map(shapes[shapes["district_id"] == "d2"], dashboard.facilities(CH, "d2"))
 
     outline, *points = fig.data
-    assert list(outline.locations) == ["d2"]
-    assert [(t.name, list(t.lon)) for t in points] == [(GRADE_MEANING["B"], [3.0])]
+    assert outline.fill == "toself"
+    # Beta MCHP has no coordinates, so only Alpha CHP (grade B) is placed
+    assert [(t.name, list(t.x)) for t in points] == [(GRADE_MEANING["B"], [3.0])]
 
 
 def test_findings_bars_total_each_check(dashboard: DashboardData) -> None:
@@ -357,3 +381,17 @@ def test_trend_chart_marks_warning_months(dashboard: DashboardData) -> None:
 
     assert [trace.name for trace in fig.data] == ["Same month last year", "Penta1", "Early warning"]
     assert list(fig.data[2].y) == [113.0]
+
+
+def test_a_shared_link_opens_its_district_and_bad_values_are_ignored(app: AppTest) -> None:
+    app.query_params["district"] = "d1"
+    app.query_params["indicator"] = "Not offered here"
+
+    app.run()
+
+    assert not app.exception
+    assert app.header[0].value == "Bo district"
+    assert app.selectbox(key="indicator").value == "Penta1 doses given"
+    # the address bar now describes the whole view, ready to share
+    assert app.query_params["dataset"] == CH
+    assert app.query_params["indicator"] == "Penta1 doses given"

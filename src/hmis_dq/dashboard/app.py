@@ -11,6 +11,7 @@ import streamlit as st
 
 from hmis_dq.dashboard.charts import (
     GRADE_MEANING,
+    clicked_district,
     dimension_bars,
     district_map,
     facility_map,
@@ -23,6 +24,7 @@ from hmis_dq.extract.catalog import DATASETS
 CACHE_SECONDS = 600
 REPO = "https://github.com/Ghentlesteve/hmis-dq-platform"
 NO_TOOLBAR = {"displayModeBar": False}
+LINKED = ("dataset", "district", "indicator")  # widget keys kept in the address bar
 
 
 @st.cache_resource
@@ -94,10 +96,32 @@ def dark_mode() -> bool:
     return st.context.theme.type == "dark"
 
 
+def restore_from_link() -> None:
+    """Open the view a shared link points to, e.g. ?dataset=..&district=..&indicator=..
+
+    Runs once per browser session; afterwards the widgets are in charge and
+    share_link() keeps the address bar in step with them.
+    """
+    if st.session_state.get("link_restored"):
+        return
+    st.session_state["link_restored"] = True
+    for key in LINKED:
+        if key in st.query_params:
+            st.session_state[key] = st.query_params[key]
+
+
+def share_link() -> None:
+    st.query_params.from_dict(
+        {key: st.session_state[key] for key in LINKED if key in st.session_state}
+    )
+
+
 def sidebar() -> str:
     """Dataset picker and the notes a first-time viewer needs. Returns the dataset id."""
     options = datasets()
     names = dict(zip(options["dataset_id"], options["name"], strict=True))
+    if st.session_state.get("dataset") not in names:
+        st.session_state.pop("dataset", None)  # e.g. a link to a dataset that's gone
     with st.sidebar:
         dataset_id: str = st.radio(
             "Dataset", list(names), format_func=names.__getitem__, key="dataset"
@@ -166,7 +190,7 @@ def overview(dataset_id: str) -> None:
         # Clicking a district opens it below. The map keeps its selection across
         # reruns, so act only on a new click, or it would undo the picker below.
         points = clicked.selection.points if clicked else []
-        picked = points[0].get("location") if points else None
+        picked = clicked_district(points[0]) if points else None
         if picked and picked != st.session_state.get("map_pick"):
             st.session_state["district"] = picked
         st.session_state["map_pick"] = picked
@@ -182,7 +206,7 @@ def overview(dataset_id: str) -> None:
                 "district": "District",
                 "grade": st.column_config.TextColumn("Grade", width="small"),
                 "overall": st.column_config.ProgressColumn(
-                    "Overall", min_value=0, max_value=100, format="%.1f", width="medium"
+                    "Overall", min_value=0, max_value=100, format="%.1f", width="small"
                 ),
                 "completeness": st.column_config.NumberColumn(
                     "Complete %", format="%.1f", width="small"
@@ -255,23 +279,17 @@ def district_facilities(dataset_id: str, district_id: str) -> None:
     with right:
         st.subheader("Worst first")
         st.dataframe(
-            rows[["facility", "grade", "overall", "completeness", "integrity", "values"]],
+            rows[["facility", "grade", "overall", "completeness"]],
             hide_index=True,
             height=460,
             column_config={
                 "facility": "Facility",
                 "grade": st.column_config.TextColumn("Grade", width="small"),
                 "overall": st.column_config.ProgressColumn(
-                    "Overall", min_value=0, max_value=100, format="%.1f", width="medium"
+                    "Overall", min_value=0, max_value=100, format="%.1f", width="small"
                 ),
                 "completeness": st.column_config.NumberColumn(
                     "Complete %", format="%.1f", width="small"
-                ),
-                "integrity": st.column_config.NumberColumn(
-                    "Integrity", format="%.1f", width="small"
-                ),
-                "values": st.column_config.NumberColumn(
-                    "Values", help="Data values reported", width="small"
                 ),
             },
         )
@@ -294,15 +312,15 @@ def district_findings(dataset_id: str, district_id: str) -> None:
             "Show findings for", list(labels), format_func=labels.__getitem__, key="check"
         )
         rows = findings(dataset_id, district_id, check)
+        # the message names the indicator itself, so it gets the room instead
         st.dataframe(
-            rows.dropna(axis="columns", how="all"),
+            rows.drop(columns="data_element").dropna(axis="columns", how="all"),
             hide_index=True,
             height=360,
             column_config={
                 "severity": st.column_config.TextColumn("Severity", width="small"),
                 "facility": "Facility",
                 "period": st.column_config.TextColumn("Month", width="small"),
-                "data_element": "Indicator",
                 "message": st.column_config.TextColumn("What was found", width="large"),
             },
         )
@@ -315,6 +333,8 @@ def district_trends(dataset_id: str, district_id: str) -> None:
     if not options:
         return
     st.subheader("Trends and early warnings")
+    if st.session_state.get("indicator") not in options:
+        st.session_state.pop("indicator", None)
     indicator: str = st.selectbox("Indicator", options, key="indicator")
     found = warnings(dataset_id)
     if not found.empty:
@@ -365,10 +385,12 @@ def main() -> None:
         page_title="HMIS Data Quality", page_icon=":material/monitor_heart:", layout="wide"
     )
     st.title("HMIS data quality and early warning")
+    restore_from_link()
     dataset_id = sidebar()
     headline(dataset_id)
     overview(dataset_id)
     district_view(dataset_id)
+    share_link()
 
 
 main()

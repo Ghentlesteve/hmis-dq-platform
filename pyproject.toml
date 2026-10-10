@@ -39,7 +39,9 @@ ml = [
     "statsmodels>=0.14",
 ]
 dashboard = [
-    "hmis-dq[explore]",
+    # listed directly (not via explore) so the dashboard image skips Jupyter/matplotlib
+    "duckdb>=1.5",
+    "pandas>=2.2",
     "streamlit>=1.50",
     "plotly>=6.0",
 ]

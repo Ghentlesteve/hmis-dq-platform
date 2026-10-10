@@ -1,6 +1,7 @@
-# Local data lake: an S3-compatible object store (SeaweedFS) with one bucket per layer.
+# Local data lake: an S3-compatible object store (SeaweedFS) with one bucket per layer,
+# and the dashboard that reads it (http://localhost:8501).
 #
-#   docker compose up -d          start it (data persists in a named volume)
+#   docker compose up -d          start both (lake data persists in a named volume)
 #   docker compose down           stop it, keep the data
 #   docker compose down -v        stop it and DELETE all lake data
 #
@@ -61,6 +62,25 @@ services:
         done
         echo "s3.bucket.list" | weed shell -master=lake:9333 -filer=lake:8888
     restart: "no"
+
+  # The dashboard, reading the lake. Built the first time `docker compose up -d` runs;
+  # after code changes: docker compose up -d --build dashboard
+  dashboard:
+    build:
+      context: .
+      dockerfile: docker/dashboard.Dockerfile
+    image: hmis-dq-dashboard:dev
+    container_name: hmis-dashboard
+    env_file: .env
+    environment:
+      # inside the compose network the lake is reached by its service name
+      HMIS_S3_ENDPOINT_URL: http://lake:8333
+    depends_on:
+      lake:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${HMIS_DASHBOARD_PORT:-8501}:8501"
+    restart: unless-stopped
 
   # Spark job runner. Not started by `up`; run jobs on demand:
   #   docker compose run --rm --service-ports spark hmis-dq spark smoke
