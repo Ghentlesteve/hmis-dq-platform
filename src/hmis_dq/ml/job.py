@@ -1,5 +1,5 @@
 """ML jobs over the gold layer -> gold/dhis2/ml/ (via DuckDB, no Spark): forecast
-backtest and anomaly detection.
+backtest, anomaly detection and early warning.
 
 The series are small (districts x tracer indicators, at most a few years of
 months), so pandas and scikit-learn are the right tools here; Spark is kept for
@@ -14,6 +14,12 @@ import pandas as pd
 from hmis_dq.config import Settings
 from hmis_dq.explore import gold, lake
 from hmis_dq.ml.anomaly import ANTIGENS, deviation_profiles, explain, score_anomalies
+from hmis_dq.ml.early_warning import (
+    district_warnings,
+    latest_forecasts,
+    recent_facility_drops,
+    warning_history,
+)
 from hmis_dq.ml.forecast import (
     LOCAL_MODELS,
     backtest_gbm,
@@ -150,3 +156,46 @@ def run_anomaly_detection(settings: Settings) -> AnomalyResult:
         caught_by_rules=float(caught.mean()) if len(flagged) else 0.0,
         caught_strongly=float(strong.mean()) if len(flagged) else 0.0,
     )
+
+
+# ------------------------------------------------------------ early warning
+
+
+@dataclass(frozen=True)
+class EarlyWarningResult:
+    latest_month: dict[str, str]  # dataset -> latest month checked
+    districts: pd.DataFrame  # district x indicator shortfalls in the latest month
+    history: pd.DataFrame  # the same check replayed over the last 12 months
+    facilities: pd.DataFrame  # recent multi-antigen drops at facilities
+
+
+def run_early_warning(settings: Settings) -> EarlyWarningResult:
+    db = lake(settings)
+    panel = load_series(db, TRACER_INDICATORS)
+    forecasts = latest_forecasts(panel, SERIES_KEYS, history_months=24)
+    reporting = db.execute(
+        f"""
+        SELECT DISTINCT dataset_id, district_id, CAST(period_start AS DATE) AS period_start,
+               reports_received
+        FROM {gold("district_month")} WHERE district_id IS NOT NULL
+        """
+    ).df()
+    reporting["period_start"] = pd.to_datetime(reporting["period_start"])
+
+    districts = district_warnings(forecasts, reporting)
+    history = warning_history(forecasts, reporting)
+    latest = forecasts.groupby("dataset_id")["period_start"].max()
+    latest_month = {str(k): v.strftime("%Y-%m") for k, v in latest.items()}
+
+    anomalies = db.sql(
+        f"SELECT * FROM read_parquet('s3://{settings.gold_bucket}/dhis2/ml/anomalies.parquet')"
+    ).df()
+    child_health_latest = latest.max().strftime("%Y%m")
+    facilities = recent_facility_drops(anomalies, child_health_latest)
+
+    if not districts.empty:
+        _write(db, districts, settings, "early_warning_districts")
+    if not history.empty:
+        _write(db, history, settings, "early_warning_history")
+    _write(db, facilities, settings, "early_warning_facilities")
+    return EarlyWarningResult(latest_month, districts, history, facilities)

@@ -12,7 +12,7 @@ shows the results on an interactive map dashboard.
 2. [x] Data lake: S3-compatible object store (SeaweedFS), bronze layer
 3. [x] PySpark transforms: silver and gold tables
 4. [x] Data quality engine: WHO DQR metrics at scale
-5. [ ] ML: forecasting vs. baselines (done), anomaly detection (done), early warning
+5. [x] ML: forecasting vs. baselines, anomaly detection, early warning
 6. [ ] Dashboard: choropleth map and drill-down
 7. [ ] NiFi ingestion flow
 8. [ ] Kubernetes deployment and CI
@@ -162,6 +162,41 @@ A first version missed a planted single-antigen typo (ranked 159th): an Isolatio
 Forest splits on one random column at a time. Adding three summaries of each profile
 (mean, largest and spread of the deviations) fixed it, and the tests plant known
 problems to keep it that way.
+
+## Early warning
+
+`hmis-dq ml early-warning` checks the latest month of every district x tracer
+indicator against an **expected range**: the best forecaster from the backtest
+(same month last year), widened by how wrong that forecast has actually been for
+the indicator in earlier months (5th-95th percentile of past errors, pooled across
+districts, never including the month being checked). Only shortfalls are flagged:
+this is about service disruption.
+
+Each warning separates two very different causes, using the district's reports
+received that month against its usual level:
+
+> *Bo, ANC 4th or more visits, March 2026: 1057, expected 1873-1939 (44% below the
+> range). 98 reports vs usual 100: likely **service decline***
+
+> *... fewer reports than usual: likely **reporting drop***
+
+It also lists facilities with a multi-antigen drop (from the anomaly model) in the
+last three months, and replays the check over the last 12 months as if each had been
+the latest, so a quiet current month can be told apart from a check that can't fire:
+
+| Month | Warnings | Service decline | Reporting drop |
+|---|---|---|---|
+| 2025-10 | 3 | 3 | 0 |
+| 2026-01 | 1 | 1 | 0 |
+| 2026-02 | 1 | 1 | 0 |
+| 2026-03 | 45 | 45 | 0 |
+| 2026-04 | 6 | 4 | 2 |
+| 2026-05 to 2026-09 | 0 | - | - |
+
+The ranges are narrow on the demo data because they are learned from past forecast
+errors, and copied values make those errors tiny; on real data they widen
+accordingly. A 5th-percentile bound also means about 1 in 20 normal district-months
+falls below it by chance, which is why small shortfalls are graded medium.
 
 ## Lake layout
 

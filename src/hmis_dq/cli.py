@@ -418,5 +418,60 @@ def ml_anomalies(
     console.print(table)
 
 
+@ml_app.command("early-warning")
+def ml_early_warning() -> None:
+    """List districts below their expected range, and facilities with recent drops."""
+    from hmis_dq.ml.job import run_early_warning  # noqa: PLC0415  (needs the ml extra)
+
+    with console.status("Checking the latest month against expected ranges..."):
+        result = run_early_warning(get_settings())
+
+    months = ", ".join(f"{d} {m}" for d, m in result.latest_month.items())
+    console.print(f"Latest month checked: {months}")
+    if result.districts.empty:
+        console.print("[green]No district is below its expected range.[/]")
+    else:
+        table = Table(title=f"District warnings ({len(result.districts)})")
+        table.add_column("severity")
+        table.add_column("warning", overflow="fold")
+        for row in result.districts.to_dict("records"):
+            colour = "red" if row["severity"] == "high" else "yellow"
+            table.add_row(f"[{colour}]{row['severity']}[/]", str(row["message"]))
+        console.print(table)
+
+    if not result.history.empty:
+        history = Table(title="Warnings over the last 12 months (each month replayed as latest)")
+        for column in ("month", "warnings", "service decline", "reporting drop", "high"):
+            history.add_column(column, justify="left" if column == "month" else "right")
+        by_month = result.history.groupby(result.history["period_start"].dt.strftime("%Y-%m"))
+        for month, rows in by_month:
+            causes = rows["likely_cause"].value_counts()
+            history.add_row(
+                str(month),
+                str(len(rows)),
+                str(causes.get("service decline", 0)),
+                str(causes.get("reporting drop", 0)),
+                str(int((rows["severity"] == "high").sum())),
+            )
+        console.print(history)
+
+    if result.facilities.empty:
+        console.print("No facility had a multi-antigen drop in the last 3 months.")
+    else:
+        table = Table(
+            title=f"Facilities with recent multi-antigen drops ({len(result.facilities)})"
+        )
+        for column in ("facility", "district", "period", "why"):
+            table.add_column(column, overflow="fold")
+        for row in result.facilities.head(15).to_dict("records"):
+            table.add_row(
+                str(row["facility"]),
+                str(row["district"]),
+                str(row["period"]),
+                str(row["explanation"]),
+            )
+        console.print(table)
+
+
 if __name__ == "__main__":
     app()
