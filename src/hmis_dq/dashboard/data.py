@@ -15,11 +15,29 @@ import pandas as pd
 
 from hmis_dq.config import Settings
 from hmis_dq.explore import find_env_file, gold, lake, silver
+from hmis_dq.spark.dq.rules import TRACER_INDICATORS
 
 Tables = Mapping[str, str]  # logical name -> DuckDB table expression
 
 DISTRICT_LEVEL = 2
 POLYGONS = ("Polygon", "MultiPolygon")
+FINDINGS_SHOWN = 500
+
+# Plain-language names for the checks in gold/dq/findings
+CHECK_LABELS = {
+    "never_reported": "Never reported",
+    "low_reporting_completeness": "Low reporting completeness",
+    "outlier": "Outlier values",
+    "penta1_penta3_dropout": "Penta3 above Penta1 (negative drop-out)",
+    "anc1_anc4_dropout": "ANC4 above ANC1 (negative drop-out)",
+    "consistency_over_time": "Inconsistent with earlier years",
+    "repeats_earlier_year": "Values copied from an earlier year",
+    "repeated_values": "Same value month after month",
+    "entered_before_period_end": "Entered before the month ended",
+    "last_updated_before_created": "Impossible timestamps",
+    "missing_coordinates": "No GPS coordinates",
+    "non_facility_assignment": "Dataset assigned to a non-facility",
+}
 
 
 def lake_tables(settings: Settings) -> dict[str, str]:
@@ -127,6 +145,81 @@ class DashboardData:
     def anomalies(self) -> pd.DataFrame:
         """Facility-months the anomaly model flagged (Child Health antigens)."""
         return self._optional("SELECT * FROM {anomalies} ORDER BY anomaly_score DESC")
+
+    # ------------------------------------------------------------- district
+
+    def facilities(self, dataset_id: str, district_id: str) -> pd.DataFrame:
+        """Facility scores in a district, worst first, with coordinates when known."""
+        return self._query(
+            """
+            SELECT f.*, o.longitude, o.latitude
+            FROM {facility_scores} f LEFT JOIN {org_units} o USING (org_unit_id)
+            WHERE f.dataset_id = ? AND f.district_id = ?
+            ORDER BY f.overall, f.facility
+            """,
+            [dataset_id, district_id],
+        )
+
+    def finding_counts(self, dataset_id: str, district_id: str) -> pd.DataFrame:
+        """Findings per check and severity. Checks that aren't about one dataset
+        (missing coordinates) have no dataset_id and are always included."""
+        counts = self._query(
+            """
+            SELECT "check", severity, count(*) AS findings
+            FROM {findings}
+            WHERE (dataset_id = ? OR dataset_id IS NULL) AND district_id = ?
+            GROUP BY ALL
+            """,
+            [dataset_id, district_id],
+        )
+        counts["label"] = counts["check"].map(CHECK_LABELS).fillna(counts["check"])
+        return counts
+
+    def findings(
+        self, dataset_id: str, district_id: str, check: str, limit: int = FINDINGS_SHOWN
+    ) -> pd.DataFrame:
+        """One check's findings in a district, most severe first."""
+        return self._query(
+            """
+            SELECT severity, facility, period, data_element, message
+            FROM {findings}
+            WHERE (dataset_id = ? OR dataset_id IS NULL) AND district_id = ? AND "check" = ?
+            ORDER BY CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+                     facility, period
+            LIMIT ?
+            """,
+            [dataset_id, district_id, check, limit],
+        )
+
+    def indicators(self, dataset_id: str) -> list[str]:
+        """The tracer indicators this dataset reports, in the order of TRACER_INDICATORS."""
+        found = set(
+            self._query(
+                "SELECT DISTINCT data_element FROM {district_month} WHERE dataset_id = ?",
+                [dataset_id],
+            )["data_element"]
+        )
+        return [name for name in TRACER_INDICATORS if name in found]
+
+    def trend(self, dataset_id: str, district_id: str, data_element: str) -> pd.DataFrame:
+        """Monthly district totals of one indicator, next to the same month a year
+        earlier (the forecast the early warning is built on)."""
+        rows = self._query(
+            """
+            SELECT CAST(period_start AS DATE) AS period_start, value, reports_received
+            FROM {district_month}
+            WHERE dataset_id = ? AND district_id = ? AND data_element = ?
+            ORDER BY period_start
+            """,
+            [dataset_id, district_id, data_element],
+        )
+        rows["period_start"] = pd.to_datetime(rows["period_start"])
+        last_year = rows[["period_start", "value"]].assign(
+            period_start=rows["period_start"] + pd.DateOffset(years=1)
+        )
+        return rows.merge(
+            last_year.rename(columns={"value": "last_year"}), on="period_start", how="left"
+        )
 
 
 # ------------------------------------------------------------------ geometry

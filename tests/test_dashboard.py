@@ -17,8 +17,12 @@ from hmis_dq.dashboard.charts import (
     NO_DATA,
     dimension_bars,
     district_map,
+    facility_map,
+    findings_bars,
+    trend_chart,
 )
 from hmis_dq.dashboard.data import (
+    CHECK_LABELS,
     DashboardData,
     district_geojson,
     label_point,
@@ -60,18 +64,70 @@ TABLES: dict[str, pd.DataFrame] = {
     "district_scores": pd.DataFrame(
         [scores("d1", "Bo", 70.0, "C"), scores("d2", "Kono", 40.0, "D"), scores("x", None, 1, "D")]
     ),
+    # Kono: Penta1 every month Aug 2025 - Sep 2026 (100, 101, ...); Bo: a non-tracer
     "district_month": pd.DataFrame(
+        [
+            {
+                "dataset_id": CH,
+                "district_id": "d2",
+                "data_element": "Penta1 doses given",
+                "period_start": month,
+                "value": 100.0 + i,
+                "reports_received": 10,
+            }
+            for i, month in enumerate(pd.date_range("2025-08-01", "2026-09-01", freq="MS"))
+        ]
+        + [
+            {
+                "dataset_id": CH,
+                "district_id": "d1",
+                "data_element": "Not a tracer",
+                "period_start": pd.Timestamp("2026-09-01"),
+                "value": 1.0,
+                "reports_received": 1,
+            }
+        ]
+    ),
+    "facility_scores": pd.DataFrame(
         {
-            "dataset_id": [CH, CH],
-            "period_start": pd.to_datetime(["2026-08-01", "2026-09-01"]),
+            "dataset_id": [CH, CH, CH, RH],
+            "org_unit_id": ["f1", "f2", "f3", "f1"],
+            "facility": ["Alpha CHP", "Beta MCHP", "Gamma CHC", "Alpha CHP"],
+            "district_id": ["d2", "d2", "d1", "d2"],
+            "overall": [80.0, 20.0, 50.0, 90.0],
+            "grade": ["B", "D", "D", "A"],
+            "completeness": [90.0, 10.0, 50.0, 95.0],
+            "integrity": [50.0, 5.0, 20.0, 80.0],
+            "values": [100, 3, 40, 120],
+        }
+    ),
+    "findings": pd.DataFrame(
+        {
+            "dataset_id": [CH, CH, CH, None, RH, CH],
+            "district_id": ["d2", "d2", "d2", "d2", "d2", "d1"],
+            "check": [
+                "outlier",
+                "outlier",
+                "outlier",
+                "missing_coordinates",
+                "outlier",
+                "outlier",
+            ],
+            "severity": ["low", "high", "high", "low", "high", "high"],
+            "facility": ["Alpha CHP", "Beta MCHP", "Alpha CHP", "Beta MCHP", "x", "y"],
+            "period": ["202601", "202602", "202601", None, "202601", "202601"],
+            "data_element": ["Penta1 doses given"] * 3 + [None] + ["ANC 1st visit"] * 2,
+            "message": ["low one", "high B", "high A", "no GPS", "other dataset", "Bo"],
         }
     ),
     "org_units": pd.DataFrame(
         {
-            "org_unit_id": ["d1", "d2", "d3", "c1"],
-            "name": ["Bo", "Kono", "PTT region", "Chiefdom"],
-            "level": [2, 2, 2, 3],
-            "geometry_type": ["Polygon", "MultiPolygon", None, "Polygon"],
+            "org_unit_id": ["d1", "d2", "d3", "c1", "f1", "f2"],
+            "name": ["Bo", "Kono", "PTT region", "Chiefdom", "Alpha CHP", "Beta MCHP"],
+            "level": [2, 2, 2, 3, 4, 4],
+            "longitude": [None, None, None, None, 3.0, None],
+            "latitude": [None, None, None, None, 1.0, None],
+            "geometry_type": ["Polygon", "MultiPolygon", None, "Polygon", "Point", None],
             "geometry": [
                 json.dumps({"type": "Polygon", "coordinates": [square(0, 0)]}),
                 json.dumps(
@@ -79,6 +135,8 @@ TABLES: dict[str, pd.DataFrame] = {
                 ),
                 None,
                 json.dumps({"type": "Polygon", "coordinates": [square(0, 0)]}),
+                json.dumps({"type": "Point", "coordinates": [3.0, 1.0]}),
+                None,
             ],
         }
     ),
@@ -86,12 +144,24 @@ TABLES: dict[str, pd.DataFrame] = {
         {
             "dataset_id": [CH, CH, CH, RH],
             "district_id": ["d2", "d2", "d1", "d1"],
+            "data_element": ["Penta1 doses given", "BCG doses given"] + ["ANC 1st visit"] * 2,
             "period_start": pd.to_datetime(
                 ["2026-09-01", "2026-09-01", "2026-08-01", "2026-09-01"]
             ),
+            "actual": [113.0, 5.0, 1.0, 1.0],
+            "message": ["Kono Penta1 low", "Kono BCG low", "Bo ANC", "Bo RH"],
         }
     ),
-    "anomalies": pd.DataFrame({"facility": ["A", "B"], "anomaly_score": [0.6, 0.9]}),
+    "anomalies": pd.DataFrame(
+        {
+            "facility": ["Alpha CHP", "Gamma CHC"],
+            "district": ["Kono", "Bo"],
+            "period": ["202601", "202602"],
+            "anomaly_score": [0.9, 0.6],
+            "rule_severity": [None, "high"],
+            "explanation": ["8 of 9 antigens far below usual", "out of step"],
+        }
+    ),
 }
 
 
@@ -209,3 +279,81 @@ def test_app_renders_from_the_lake_tables(
     assert app.metric[3].label == "Early warnings, Sep 2026"
     assert app.metric[3].value == "2"
     assert app.metric[4].value == "2"  # anomalies (Child Health)
+    # the drill-down opens on the worst district
+    assert app.selectbox(key="district").value == "d2"
+    assert app.header[0].value == "Kono district"
+    assert app.metric[5].value == "40.0 · D"
+    assert app.selectbox(key="indicator").options == ["Penta1 doses given"]
+
+
+# ------------------------------------------------------------------ district
+
+
+def test_facilities_worst_first_with_coordinates(dashboard: DashboardData) -> None:
+    rows = dashboard.facilities(CH, "d2")
+
+    assert rows["facility"].tolist() == ["Beta MCHP", "Alpha CHP"]
+    assert rows["longitude"].isna().tolist() == [True, False]
+
+
+def test_finding_counts_include_checks_without_a_dataset(dashboard: DashboardData) -> None:
+    counts = dashboard.finding_counts(CH, "d2").sort_values(["check", "severity"])
+
+    assert counts[["check", "severity", "findings"]].values.tolist() == [
+        ["missing_coordinates", "low", 1],
+        ["outlier", "high", 2],
+        ["outlier", "low", 1],
+    ]  # the Reproductive Health outlier and Bo's are left out
+    assert counts["label"].iloc[0] == CHECK_LABELS["missing_coordinates"]
+
+
+def test_findings_most_severe_first_and_limited(dashboard: DashboardData) -> None:
+    assert dashboard.findings(CH, "d2", "outlier")["message"].tolist() == [
+        "high A",
+        "high B",
+        "low one",
+    ]
+    assert len(dashboard.findings(CH, "d2", "outlier", limit=1)) == 1
+
+
+def test_only_tracer_indicators_are_offered(dashboard: DashboardData) -> None:
+    assert dashboard.indicators(CH) == ["Penta1 doses given"]
+
+
+def test_trend_pairs_each_month_with_the_same_month_last_year(dashboard: DashboardData) -> None:
+    rows = dashboard.trend(CH, "d2", "Penta1 doses given").set_index("period_start")
+
+    assert rows.loc["2026-09-01", "value"] == 113.0
+    assert rows.loc["2026-09-01", "last_year"] == 101.0  # September 2025
+    assert pd.isna(rows.loc["2025-09-01", "last_year"])  # before the data starts
+
+
+def test_facility_map_plots_placed_facilities_by_grade(dashboard: DashboardData) -> None:
+    shapes = dashboard.district_shapes()
+
+    fig = facility_map(shapes[shapes["district_id"] == "d2"], dashboard.facilities(CH, "d2"))
+
+    outline, *points = fig.data
+    assert list(outline.locations) == ["d2"]
+    assert [(t.name, list(t.lon)) for t in points] == [(GRADE_MEANING["B"], [3.0])]
+
+
+def test_findings_bars_total_each_check(dashboard: DashboardData) -> None:
+    fig = findings_bars(dashboard.finding_counts(CH, "d2"))
+
+    *bars, totals = fig.data
+    assert [bar.name for bar in bars] == ["high", "medium", "low"]
+    assert list(totals.y) == [CHECK_LABELS["missing_coordinates"], CHECK_LABELS["outlier"]]
+    assert [text.strip() for text in totals.text] == ["1", "3"]
+
+
+def test_trend_chart_marks_warning_months(dashboard: DashboardData) -> None:
+    warnings = dashboard.warnings(CH)
+    kono = warnings[
+        (warnings["district_id"] == "d2") & (warnings["data_element"] == "Penta1 doses given")
+    ]
+
+    fig = trend_chart(dashboard.trend(CH, "d2", "Penta1 doses given"), kono, "Penta1")
+
+    assert [trace.name for trace in fig.data] == ["Same month last year", "Penta1", "Early warning"]
+    assert list(fig.data[2].y) == [113.0]

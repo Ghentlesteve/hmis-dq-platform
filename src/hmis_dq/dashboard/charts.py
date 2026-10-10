@@ -179,3 +179,168 @@ def dimension_bars(scores: pd.Series) -> go.Figure:
         plot_bgcolor="rgba(0,0,0,0)",
     )
     return fig
+
+
+# ------------------------------------------------------------------ district
+
+SEVERITY_COLOURS = {"high": "#184f95", "medium": "#3987e5", "low": "#86b6ef"}  # dark = worse
+WARNING = GRADE_COLOURS["D"]  # status "critical"
+LAST_YEAR = "#8c8b86"
+
+_FACILITY_HOVER = (
+    "<b>%{customdata[0]}</b><br>Overall %{customdata[1]:.1f} (grade %{customdata[2]})"
+    "<br>Completeness %{customdata[3]:.1f}%<extra></extra>"
+)
+
+
+def facility_map(
+    outline: pd.DataFrame, facilities: pd.DataFrame, *, dark: bool = False, height: int = 460
+) -> go.Figure:
+    """The district outline (one row of district_shapes) with its facilities as
+    points coloured by grade."""
+    geojson = district_geojson(outline)
+    middle = MIDPOINT_DARK if dark else MIDPOINT_LIGHT
+    fig = go.Figure(
+        go.Choropleth(
+            geojson=geojson,
+            locations=outline["district_id"],
+            z=[0],
+            colorscale=[[0, middle], [1, middle]],
+            showscale=False,
+            marker={"line": {"color": NO_DATA, "width": 1}},
+            hoverinfo="skip",
+        )
+    )
+    placed = facilities.dropna(subset=["longitude", "latitude"])
+    for grade, colour in GRADE_COLOURS.items():
+        rows = placed[placed["grade"] == grade]
+        if rows.empty:
+            continue
+        fig.add_trace(
+            go.Scattergeo(
+                lon=rows["longitude"],
+                lat=rows["latitude"],
+                mode="markers",
+                name=GRADE_MEANING[grade],
+                marker={
+                    "size": 10,
+                    "color": colour,
+                    "line": {"color": middle, "width": 1.5},
+                },
+                customdata=rows[["facility", "overall", "grade", "completeness"]].to_numpy(),
+                hovertemplate=_FACILITY_HOVER,
+            )
+        )
+    (west, south), (east, north) = bounds(geojson)
+    pad = 0.05 * max(east - west, north - south)
+    fig.update_geos(
+        projection_type="mercator",
+        lonaxis_range=[west - pad, east + pad],
+        lataxis_range=[south - pad, north + pad],
+        visible=False,
+        bgcolor="rgba(0,0,0,0)",
+    )
+    fig.update_layout(
+        height=height,
+        margin={"l": 0, "r": 0, "t": 0, "b": 0},
+        paper_bgcolor="rgba(0,0,0,0)",
+        legend={"title": {"text": "Facility grade"}, "orientation": "h", "y": 0, "x": 0},
+        dragmode=False,
+    )
+    return fig
+
+
+def findings_bars(counts: pd.DataFrame) -> go.Figure:
+    """Findings per check, split by severity, most common check on top."""
+    totals = counts.groupby("label")["findings"].sum().sort_values()
+    fig = go.Figure()
+    for severity, colour in SEVERITY_COLOURS.items():
+        rows = counts[counts["severity"] == severity].set_index("label")["findings"]
+        values = rows.reindex(totals.index).fillna(0)
+        fig.add_trace(
+            go.Bar(
+                x=values,
+                y=totals.index,
+                orientation="h",
+                name=severity,
+                marker={"color": colour, "line": {"color": "rgba(0,0,0,0)", "width": 0}},
+                hovertemplate="%{y}: %{x:,} " + severity + "<extra></extra>",
+            )
+        )
+    fig.add_trace(
+        go.Scatter(
+            x=totals,
+            y=totals.index,
+            mode="text",
+            text=[f"  {total:,}" for total in totals],
+            textposition="middle right",
+            hoverinfo="skip",
+            showlegend=False,
+            cliponaxis=False,
+        )
+    )
+    fig.update_xaxes(range=[0, totals.max() * 1.18 if len(totals) else 1], showgrid=True)
+    fig.update_layout(
+        barmode="stack",
+        bargap=0.35,
+        height=60 + 32 * len(totals),
+        margin={"l": 0, "r": 10, "t": 10, "b": 10},
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        legend={"title": {"text": "Severity"}, "orientation": "h", "y": 1.02, "yanchor": "bottom"},
+    )
+    return fig
+
+
+def trend_chart(trend: pd.DataFrame, warnings: pd.DataFrame, indicator: str) -> go.Figure:
+    """An indicator's monthly totals, the same month a year earlier, and the months
+    the early warning fired."""
+    fig = go.Figure(
+        [
+            go.Scatter(
+                x=trend["period_start"],
+                y=trend["last_year"],
+                name="Same month last year",
+                mode="lines",
+                line={"color": LAST_YEAR, "width": 2, "dash": "dot"},
+                hovertemplate="%{x|%b %Y} last year: %{y:,.0f}<extra></extra>",
+            ),
+            go.Scatter(
+                x=trend["period_start"],
+                y=trend["value"],
+                name=indicator,
+                mode="lines",
+                line={"color": BLUE, "width": 2},
+                customdata=trend[["reports_received"]].to_numpy(),
+                hovertemplate=("%{x|%b %Y}: %{y:,.0f} (%{customdata[0]} reports)<extra></extra>"),
+            ),
+        ]
+    )
+    if not warnings.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=warnings["period_start"],
+                y=warnings["actual"],
+                name="Early warning",
+                mode="markers",
+                marker={
+                    "color": WARNING,
+                    "size": 11,
+                    "symbol": "triangle-down",
+                    "line": {"color": BORDER, "width": 1.5},
+                },
+                customdata=warnings[["message"]].to_numpy(),
+                hovertemplate="%{customdata[0]}<extra></extra>",
+            )
+        )
+    fig.update_xaxes(showgrid=False)
+    fig.update_yaxes(rangemode="tozero", showgrid=True)
+    fig.update_layout(
+        height=340,
+        margin={"l": 0, "r": 10, "t": 30, "b": 10},
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        hovermode="closest",
+        legend={"orientation": "h", "y": 1.02, "yanchor": "bottom", "x": 0},
+    )
+    return fig
