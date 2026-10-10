@@ -85,6 +85,9 @@ ignore = ["PLR0913"]
 # `from pyspark.sql import functions as F` is the standard PySpark convention
 "src/hmis_dq/spark/**" = ["N812"]
 "tests/spark/**" = ["N812"]
+# NiFi Python processors: NiFi's API names (getPropertyDescriptors) and its
+# convention of plain lists for `implements` and `tags`
+"nifi/**" = ["N802", "RUF012"]
 
 [tool.mypy]
 python_version = "3.11"

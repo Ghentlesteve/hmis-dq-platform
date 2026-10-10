@@ -82,6 +82,40 @@ services:
       - "127.0.0.1:${HMIS_DASHBOARD_PORT:-8501}:8501"
     restart: unless-stopped
 
+  # Apache NiFi: scheduled ingestion DHIS2 -> bronze, as a visual, monitored flow.
+  # Not started (or downloaded: the image is about 1.1 GB) by a plain `up`; run
+  #   docker compose --profile nifi up -d        then https://localhost:18443/nifi
+  nifi:
+    image: apache/nifi:2.12.0
+    container_name: hmis-nifi
+    profiles: ["nifi"]
+    environment:
+      # one login, from .env (NiFi 2 always runs on HTTPS with a login). Not marked
+      # required here: compose reads every service, and the lake must start without it.
+      SINGLE_USER_CREDENTIALS_USERNAME: ${HMIS_NIFI_USERNAME:-hmis}
+      SINGLE_USER_CREDENTIALS_PASSWORD: ${HMIS_NIFI_PASSWORD:-}
+      NIFI_WEB_HTTPS_PORT: "8443"
+      # NiFi rejects requests for host names it doesn't know: allow the published port
+      NIFI_WEB_PROXY_HOST: "localhost:${HMIS_NIFI_PORT:-18443},127.0.0.1:${HMIS_NIFI_PORT:-18443}"
+      NIFI_JVM_HEAP_INIT: 512m
+      NIFI_JVM_HEAP_MAX: 1g
+    volumes:
+      # our Python processors (NiFi 2 loads them from this folder)
+      - ./nifi/python_extensions:/opt/nifi/nifi-current/python_extensions:ro
+      # the flow, its state and any queued data survive restarts
+      - nifi-conf:/opt/nifi/nifi-current/conf
+      - nifi-state:/opt/nifi/nifi-current/state
+      - nifi-flowfiles:/opt/nifi/nifi-current/flowfile_repository
+      - nifi-content:/opt/nifi/nifi-current/content_repository
+      - nifi-provenance:/opt/nifi/nifi-current/provenance_repository
+    depends_on:
+      lake:
+        condition: service_healthy
+    ports:
+      # not 8443: Windows (Hyper-V/WSL) often reserves the range around it
+      - "127.0.0.1:${HMIS_NIFI_PORT:-18443}:8443"
+    restart: unless-stopped
+
   # Spark job runner. Not started by `up`; run jobs on demand:
   #   docker compose run --rm --service-ports spark hmis-dq spark smoke
   spark:
@@ -117,3 +151,8 @@ services:
 
 volumes:
   lake-data:
+  nifi-conf:
+  nifi-state:
+  nifi-flowfiles:
+  nifi-content:
+  nifi-provenance:

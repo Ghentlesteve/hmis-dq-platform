@@ -51,6 +51,17 @@ class Settings(BaseSettings):
     spark_driver_memory: str = "3g"
     spark_shuffle_partitions: int = Field(default=16, gt=0)
 
+    # Apache NiFi (docker compose --profile nifi). Its HTTPS certificate is
+    # self-signed, so it isn't verified by default: fine for localhost only.
+    nifi_url: HttpUrl = HttpUrl("https://localhost:18443")
+    nifi_username: str | None = None
+    nifi_password: SecretStr | None = None
+    nifi_verify_tls: bool = False
+    # the lake as NiFi reaches it, inside the compose network
+    nifi_s3_endpoint_url: HttpUrl = HttpUrl("http://lake:8333")
+    nifi_refresh_months: int = Field(default=3, gt=0)
+    nifi_schedule: str = "0 0 2 * * ?"  # Quartz cron: every day at 02:00
+
     @property
     def raw_dir(self) -> Path:
         return self.data_dir / "raw"

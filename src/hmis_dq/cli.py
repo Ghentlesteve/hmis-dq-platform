@@ -6,8 +6,9 @@ import sys
 from collections import Counter
 from datetime import date
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
+import httpx
 import typer
 from rich.console import Console
 from rich.logging import RichHandler
@@ -28,6 +29,9 @@ from hmis_dq.extract.store import (
 )
 from hmis_dq.extract.sync import sync_stores
 
+if TYPE_CHECKING:
+    from hmis_dq.nifi.deploy import Deployer
+
 app = typer.Typer(help="HMIS data quality and early-warning platform.", no_args_is_help=True)
 lake_app = typer.Typer(help="Manage the S3 data lake.", no_args_is_help=True)
 app.add_typer(lake_app, name="lake")
@@ -35,6 +39,8 @@ spark_app = typer.Typer(help="Spark jobs (run inside the spark container).", no_
 app.add_typer(spark_app, name="spark")
 ml_app = typer.Typer(help="Forecasting and anomaly detection (runs locally).", no_args_is_help=True)
 app.add_typer(ml_app, name="ml")
+nifi_app = typer.Typer(help="The scheduled NiFi ingestion flow.", no_args_is_help=True)
+app.add_typer(nifi_app, name="nifi")
 console = Console()
 
 StoreOption = Annotated[
@@ -476,10 +482,6 @@ def ml_early_warning() -> None:
         console.print(table)
 
 
-if __name__ == "__main__":
-    app()
-
-
 @app.command()
 def dashboard(
     port: Annotated[int, typer.Option(help="Port to serve the dashboard on.")] = 8501,
@@ -488,3 +490,106 @@ def dashboard(
     app_path = Path(__file__).parent / "dashboard" / "app.py"
     command = [sys.executable, "-m", "streamlit", "run", str(app_path), "--server.port", str(port)]
     raise typer.Exit(subprocess.call(command))
+
+
+# ------------------------------------------------------------------- NiFi
+
+
+def _nifi() -> "Deployer":
+    from hmis_dq.nifi.client import NiFiClient, NiFiError  # noqa: PLC0415
+    from hmis_dq.nifi.deploy import Deployer  # noqa: PLC0415
+
+    try:
+        client = NiFiClient.from_settings(get_settings())
+        client.login()
+    except (NiFiError, httpx.TransportError) as exc:
+        console.print(f"[red]Can't reach NiFi:[/] {exc}")
+        console.print("Is it running?  docker compose --profile nifi up -d")
+        raise typer.Exit(code=2) from exc
+    return Deployer(client)
+
+
+def _deployed_group(deployer: "Deployer") -> str:
+    from hmis_dq.nifi.flow import FLOW_NAME  # noqa: PLC0415
+
+    group = deployer.find_group(FLOW_NAME)
+    if group is None:
+        console.print(f"[red]{FLOW_NAME!r} isn't deployed yet:[/] run hmis-dq nifi deploy")
+        raise typer.Exit(code=1)
+    return str(group["id"])
+
+
+@nifi_app.command("deploy")
+def nifi_deploy(
+    replace: Annotated[
+        bool, typer.Option(help="Rebuild the flow if it is already deployed.")
+    ] = False,
+    start: Annotated[bool, typer.Option(help="Start it once it is built.")] = False,
+) -> None:
+    """Build the DHIS2 -> bronze flow in NiFi, from the code in hmis_dq/nifi/flow.py."""
+    from hmis_dq.nifi.client import NiFiError  # noqa: PLC0415
+    from hmis_dq.nifi.flow import dhis2_to_bronze  # noqa: PLC0415
+
+    settings = get_settings()
+    deployer = _nifi()
+    flow = dhis2_to_bronze(settings)
+    try:
+        with console.status(f"Building {flow.name!r} in NiFi..."):
+            deployment = deployer.deploy(flow, replace=replace)
+    except NiFiError as exc:
+        console.print(f"[red]Deploy failed:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print(
+        f"Built {flow.name!r}: {len(deployment.processors)} processors, "
+        f"{len(flow.connections)} connections. Open {settings.nifi_url}nifi to see it."
+    )
+    if deployment.problems:
+        table = Table(title="NiFi says these need fixing before the flow can start")
+        table.add_column("component")
+        table.add_column("problem", overflow="fold")
+        for name, errors in deployment.problems.items():
+            for error in errors:
+                table.add_row(name, error)
+        console.print(table)
+        raise typer.Exit(code=1)
+    console.print("[green]Every processor and service is valid.[/]")
+    if start:
+        deployer.start(deployment)
+        console.print(f"Started. It runs on its schedule ({settings.nifi_schedule}, Quartz cron);")
+        console.print("to fetch now: hmis-dq nifi run")
+
+
+@nifi_app.command("run")
+def nifi_run() -> None:
+    """Fetch the latest months now, instead of waiting for the schedule."""
+    deployer = _nifi()
+    group_id = _deployed_group(deployer)
+    with console.status("Asking DHIS2 for the district list..."):
+        deployer.run_once(group_id, "List districts")
+    console.print("Triggered. The chunks are now flowing; watch them with: hmis-dq nifi status")
+
+
+@nifi_app.command("status")
+def nifi_status() -> None:
+    """Show what each step of the flow did in the last 5 minutes."""
+    deployer = _nifi()
+    rows, failed = deployer.status(_deployed_group(deployer))
+    table = Table(title="DHIS2 to bronze (FlowFiles in the last 5 minutes)")
+    for column in ("step", "state", "in", "out"):
+        table.add_column(column, justify="left" if column in {"step", "state"} else "right")
+    for row in rows:
+        colour = {"RUNNING": "green", "STOPPED": "yellow"}.get(row["state"], "red")
+        table.add_row(row["name"], f"[{colour}]{row['state']}[/]", str(row["in"]), str(row["out"]))
+    console.print(table)
+    if failed:
+        console.print(
+            f"[red]{failed} FlowFile(s) parked in 'Failed'.[/] Open NiFi, right-click the "
+            "queue into the funnel, and choose List queue to see why."
+        )
+    else:
+        console.print("Nothing has failed.")
+
+
+if __name__ == "__main__":
+    app()

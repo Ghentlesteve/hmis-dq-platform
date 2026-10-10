@@ -14,7 +14,7 @@ shows the results on an interactive map dashboard.
 4. [x] Data quality engine: WHO DQR metrics at scale
 5. [x] ML: forecasting vs. baselines, anomaly detection, early warning
 6. [x] Dashboard: district map and drill-down (Streamlit, in Docker)
-7. [ ] NiFi ingestion flow
+7. [ ] NiFi ingestion flow (built and unit-tested; first live run pending)
 8. [ ] Kubernetes deployment and CI
 
 ## Local setup
@@ -248,6 +248,46 @@ container (code changes show up without rebuilding an image):
 hmis-dq dashboard --port 8502   # 8501 is taken by the container
 docker compose up -d --build dashboard   # rebuild the container after changes
 ```
+
+## Scheduled ingestion with Apache NiFi
+
+`hmis-dq extract` is the right tool for a one-off backfill. Keeping the lake fresh
+is a different job: every night, re-fetch the last few months (facilities keep
+correcting them for weeks), retry what fails, and show an operator what happened.
+That is what NiFi is for, so the nightly refresh runs as a NiFi flow:
+
+```
+every day at 02:00
+List districts ─> Plan chunks ─> One chunk per FlowFile ─> Chunk attributes
+(InvokeHTTP)      (Python)       (SplitJson)               (EvaluateJsonPath)
+                                                                  │
+Save to bronze <─ Wrap as bronze file <─ Fetch data values <──────┘
+(PutS3Object)     (Python)               (InvokeHTTP, 3 at a time)
+```
+
+- **Two custom NiFi processors in Python** (`nifi/python_extensions/`): one plans the
+  dataset x district x month requests, the other wraps each response in the
+  bronze envelope. Tests pin them to the Python extractor: the same keys, and
+  **byte-for-byte the same files**, so Spark can't tell who wrote a file.
+- **The flow is code, not clicks.** `hmis_dq/nifi/flow.py` describes it;
+  `hmis-dq nifi deploy` builds it through NiFi's REST API, with credentials passed
+  as sensitive parameters (never written into a processor), and reports anything
+  NiFi finds invalid. Redeploying rebuilds it from the repository.
+- **Failures are parked, not lost.** Requests are retried with growing back-off;
+  whatever still fails waits in a "Failed" funnel, visible on the canvas.
+
+```bash
+# set HMIS_NIFI_USERNAME / HMIS_NIFI_PASSWORD in .env, then
+docker compose --profile nifi up -d   # first time: downloads NiFi (about 1.1 GB)
+hmis-dq nifi deploy --start           # build the flow and start its schedule
+hmis-dq nifi run                      # or fetch the latest months right now
+hmis-dq nifi status                   # what each step did; anything failed?
+```
+
+NiFi's UI is at https://localhost:18443/nifi (a self-signed certificate: the
+browser warns once). Status: the processors and the deployer are unit-tested
+(against a fake NiFi that enforces the real API's validation rules); the first
+run against a live NiFi is still to come.
 
 ## Lake layout
 
