@@ -18,7 +18,7 @@ from pyspark.sql import functions as F
 
 from hmis_dq.config import Settings
 from hmis_dq.spark.schemas import DATA_VALUE_FILE, metadata_file_schema
-from hmis_dq.spark.session import build_spark, s3a_url
+from hmis_dq.spark.session import build_spark, s3a_url, session_setting
 
 # DHIS2 value types that hold a number; everything else stays text.
 NUMERIC_VALUE_TYPES = frozenset(
@@ -268,7 +268,13 @@ def _read_metadata(spark: SparkSession, settings: Settings, resource: str) -> Da
 
 def run_silver(settings: Settings) -> SilverResult:
     spark = build_spark(settings, "hmis-silver")
-    spark.conf.set("spark.sql.sources.partitionColumnTypeInference.enabled", "false")
+    # bronze folder names (period=202501, org_unit=...) are identifiers: keep them
+    # as text, but only while silver runs (see session_setting)
+    with session_setting(spark, "spark.sql.sources.partitionColumnTypeInference.enabled", "false"):
+        return _build_silver(spark, settings)
+
+
+def _build_silver(spark: SparkSession, settings: Settings) -> SilverResult:
 
     def read(resource: str) -> DataFrame:
         return _read_metadata(spark, settings, resource).cache()

@@ -1,0 +1,39 @@
+# The Spark pipeline as a CronJob: every night, after NiFi's 02:00 refresh,
+# bronze -> silver -> gold -> data quality scores. Run it now with:
+#   kubectl -n hmis-dq create job spark-build-now --from=cronjob/spark-build
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: spark-build
+  labels:
+    app.kubernetes.io/name: spark-build
+spec:
+  schedule: "30 3 * * *"
+  concurrencyPolicy: Forbid # never two builds writing the same tables at once
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: spark-build
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: spark
+              image: hmis-dq-spark:dev
+              imagePullPolicy: Never # the image built by docker compose
+              args: ["hmis-dq", "spark", "build"]
+              envFrom:
+                - secretRef: { name: hmis-env }
+              env:
+                - { name: HMIS_S3_ENDPOINT_URL, value: "http://lake:8333" }
+                # leave room inside the memory limit for Python and the JVM's overhead
+                - { name: HMIS_SPARK_DRIVER_MEMORY, value: "2g" }
+              resources:
+                requests: { cpu: "1", memory: 2560Mi }
+                limits: { memory: 3584Mi }

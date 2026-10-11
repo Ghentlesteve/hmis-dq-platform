@@ -5,6 +5,8 @@
 #           integration tests use the real lake, started with docker compose.
 #           Any skipped test fails the run (HMIS_FAIL_ON_SKIP).
 #   docker  build the dashboard image, start it next to the lake, check health
+#   kubernetes  a throwaway cluster (kind): deploy k8s/, wait for the lake, the
+#           bucket job and both dashboard copies, check the dashboard's health
 #
 # Nothing here touches DHIS2 or needs a secret: the lake's keys are generated
 # for each run, and the DHIS2 settings are placeholders the tests never call.
@@ -134,3 +136,54 @@ jobs:
       - name: Logs (on failure)
         if: failure()
         run: docker compose logs
+
+  kubernetes:
+    # a throwaway cluster (kind) on the runner: deploy k8s/ and check it comes up
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Build the dashboard image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/dashboard.Dockerfile
+          tags: hmis-dq-dashboard:dev
+          load: true
+          cache-from: type=gha,scope=dashboard
+      - name: Validate the manifests
+        run: kubectl kustomize k8s > /dev/null
+      - name: Create the cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: hmis-ci
+      - name: Deploy
+        run: |
+          # the manifests say imagePullPolicy: Never, so give kind the image directly
+          kind load docker-image hmis-dq-dashboard:dev --name hmis-ci
+          kubectl apply -f k8s/namespace.yaml
+          kubectl -n hmis-dq create secret generic hmis-env \
+            --from-literal=HMIS_DHIS2_BASE_URL=https://dhis2.invalid \
+            --from-literal=HMIS_DHIS2_USERNAME=ci \
+            --from-literal=HMIS_DHIS2_PASSWORD=ci \
+            --from-literal=HMIS_S3_ACCESS_KEY=hmis-ci \
+            --from-literal=HMIS_S3_SECRET_KEY="$(openssl rand -hex 24)"
+          kubectl apply -k k8s
+      - name: Wait until it's up
+        run: |
+          kubectl -n hmis-dq rollout status statefulset/lake --timeout=300s
+          kubectl -n hmis-dq wait --for=condition=complete job/lake-init --timeout=300s
+          kubectl -n hmis-dq rollout status deployment/dashboard --timeout=300s
+      - name: Smoke test
+        run: |
+          kubectl -n hmis-dq port-forward service/dashboard 8601:8601 &
+          sleep 5
+          test "$(curl -fsS http://localhost:8601/_stcore/health)" = "ok"
+          kubectl -n hmis-dq get pods >> "$GITHUB_STEP_SUMMARY"
+      - name: Cluster state (on failure)
+        if: failure()
+        run: |
+          kubectl -n hmis-dq get all
+          kubectl -n hmis-dq describe pods
+          kubectl -n hmis-dq logs statefulset/lake --tail=50 || true

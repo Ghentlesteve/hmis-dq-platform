@@ -32,7 +32,7 @@ from hmis_dq.spark.dq.system import (
     repeated_values_findings,
     repeats_earlier_year_findings,
 )
-from hmis_dq.spark.session import build_spark, s3a_url
+from hmis_dq.spark.session import build_spark, s3a_url, session_setting
 
 # Every check the engine runs, so a check with no findings still shows up as 0
 ALL_CHECKS = (
@@ -99,10 +99,10 @@ def run_dq(settings: Settings, rules: DQRules = DEFAULT_RULES) -> DQResult:
     )
     # Overwrite the whole table: a check that finds nothing this run must not
     # leave last run's findings behind (dynamic partition overwrite would).
-    spark.conf.set("spark.sql.sources.partitionOverwriteMode", "static")
-    findings.repartition("check").write.mode("overwrite").partitionBy("check").parquet(
-        dq_path("findings")
-    )
+    with session_setting(spark, "spark.sql.sources.partitionOverwriteMode", "static"):
+        findings.repartition("check").write.mode("overwrite").partitionBy("check").parquet(
+            dq_path("findings")
+        )
 
     written = spark.read.parquet(dq_path("findings")).cache()
 

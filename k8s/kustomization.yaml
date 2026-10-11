@@ -1,0 +1,23 @@
+# The platform on Kubernetes (Docker Desktop's local cluster, or any other).
+#
+#   kubectl apply -k k8s                  create or update everything below
+#   kubectl -n hmis-dq get pods           see it running
+#   kubectl delete -k k8s                 remove it (the lake's disk goes too)
+#
+# The images are the ones built for Docker Compose, used straight from the local
+# Docker image store (imagePullPolicy: Never): nothing is downloaded. Settings and
+# secrets come from a Secret made from your .env (see README), never from a file
+# in this folder.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: hmis-dq
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: hmis-dq
+resources:
+  - namespace.yaml
+  - lake.yaml
+  - lake-init.yaml
+  - dashboard.yaml
+  - pipeline.yaml

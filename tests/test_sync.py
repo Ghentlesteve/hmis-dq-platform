@@ -1,7 +1,16 @@
+from collections.abc import Iterator
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+import boto3
+import pytest
+from moto import mock_aws
 
 from hmis_dq.extract.store import LocalRawStore
-from hmis_dq.extract.sync import sync_stores
+from hmis_dq.extract.sync import mirror_buckets, sync_stores
+
+if TYPE_CHECKING:
+    from mypy_boto3_s3 import S3Client
 
 
 def stores(tmp_path: Path) -> tuple[LocalRawStore, LocalRawStore]:
@@ -51,3 +60,33 @@ def test_reports_progress_per_key(tmp_path: Path) -> None:
 
     assert planned == [3]
     assert sorted(seen) == sorted(source.list_keys())
+
+
+# ----------------------------------------------------------- bucket mirror
+
+
+@pytest.fixture
+def s3() -> Iterator["S3Client"]:
+    with mock_aws():
+        client = boto3.client("s3", region_name="us-east-1")
+        client.create_bucket(Bucket="src-gold")
+        client.put_object(Bucket="src-gold", Key="dhis2/a.parquet", Body=b"\x00PAR1 binary")
+        client.put_object(Bucket="src-gold", Key="dhis2/b.json.gz", Body=b"\x1f\x8b gzip")
+        yield client
+
+
+def test_mirror_copies_any_object_byte_for_byte(s3: "S3Client") -> None:
+    result = mirror_buckets(s3, s3, [("src-gold", "dst-gold")])
+
+    assert (result.copied, result.skipped) == (2, 0)
+    body = s3.get_object(Bucket="dst-gold", Key="dhis2/a.parquet")["Body"].read()
+    assert body == b"\x00PAR1 binary"  # created the missing bucket, bytes untouched
+
+
+def test_mirror_copies_only_what_changed(s3: "S3Client") -> None:
+    mirror_buckets(s3, s3, [("src-gold", "dst-gold")])
+    s3.put_object(Bucket="src-gold", Key="dhis2/a.parquet", Body=b"\x00PAR1 rewritten, longer")
+
+    again = mirror_buckets(s3, s3, [("src-gold", "dst-gold")])
+
+    assert (again.copied, again.skipped) == (1, 1)

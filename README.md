@@ -6,7 +6,7 @@ End-to-end pipeline that pulls routine health data from DHIS2, scores it against
 WHO Data Quality Review framework, detects anomalies, forecasts key indicators and
 shows the results on an interactive map dashboard.
 
-> Work in progress — built in stages. See the roadmap below.
+> Built in stages; all eight are done. See the roadmap below.
 
 ## Roadmap
 
@@ -17,7 +17,7 @@ shows the results on an interactive map dashboard.
 5. [x] ML: forecasting vs. baselines, anomaly detection, early warning
 6. [x] Dashboard: district map and drill-down (Streamlit, in Docker)
 7. [x] NiFi ingestion flow (nightly refresh, deployed from code)
-8. [ ] Kubernetes deployment and CI (CI done: GitHub Actions)
+8. [x] Kubernetes deployment and CI (GitHub Actions)
 
 ## Local setup
 
@@ -304,9 +304,45 @@ the flow begins with a separate trigger step. It also showed why monitoring
 matters: the DHIS2 demo moved from `stable-2-43-1` to `stable-2-43-2` and the old
 address now answers 404.
 
+## Kubernetes
+
+`k8s/` runs the platform on Kubernetes (tested on Docker Desktop's built-in
+cluster), using the same images as Docker Compose:
+
+| Part | Kubernetes object | Why |
+|---|---|---|
+| Lake (SeaweedFS) | StatefulSet + 10 GB PersistentVolume + Service | keeps data: a stable name and a disk that outlives the pod |
+| Bucket setup | Job | runs once; retries until the lake is ready |
+| Dashboard | Deployment, 2 replicas, health probes, LoadBalancer on `localhost:8601` | stateless: crashed or unhealthy copies are replaced, traffic only goes to ready ones |
+| Spark pipeline | CronJob, nightly at 03:30 (after NiFi's 02:00 refresh) | bronze -> silver -> gold -> data quality as a scheduled batch job |
+| Settings and secrets | Secret created from `.env` | nothing secret in the repository |
+
+```bash
+kubectl apply -f k8s/namespace.yaml
+kubectl -n hmis-dq create secret generic hmis-env --from-env-file=.env
+kubectl apply -k k8s                                   # everything else
+hmis-dq lake mirror --to http://localhost:18333        # seed the cluster's lake
+kubectl -n hmis-dq create job build-now --from=cronjob/spark-build   # run Spark now
+kubectl -n hmis-dq get pods                            # dashboard: http://localhost:8601
+```
+
+What running it here showed:
+
+- **Self-healing:** deleting one dashboard pod, Kubernetes had a replacement ready
+  in 11 seconds, and the dashboard answered throughout from the other copy.
+- **A real pipeline bug:** the first Spark Job failed. `hmis-dq spark build` runs
+  silver, gold and the checks in one Spark session, and silver had switched off
+  partition type inference (bronze folder names are identifiers) for the whole
+  session, so gold's `year=2026` came back as text and the checks' `%d` messages
+  broke. Run as three separate commands, as before, it never showed. Settings are
+  now changed for one step only (`session_setting`), with a regression test.
+- **No downloads:** the manifests use the local images (`imagePullPolicy: Never`),
+  and `hmis-dq lake mirror` copied the Compose lake into the cluster's (1,463
+  files, 25.5 MB, 14 s) instead of extracting from DHIS2 again.
+
 ## Continuous integration
 
-Every push to `main` and every pull request runs three GitHub Actions jobs
+Every push to `main` and every pull request runs four GitHub Actions jobs
 (`.github/workflows/ci.yml`):
 
 | Job | What it proves |
@@ -314,6 +350,7 @@ Every push to `main` and every pull request runs three GitHub Actions jobs
 | `lint` | ruff: style and common bugs |
 | `test` | mypy strict, then **every** test: Spark runs natively on Java 21, and the integration tests use the real lake, started with `docker compose` |
 | `docker` | the dashboard image builds (layer cache kept between runs), starts next to the lake and reports healthy |
+| `kubernetes` | a throwaway cluster (kind): `k8s/` deploys, the lake, the bucket job and both dashboard replicas come up, and the dashboard reports healthy |
 
 Locally, tests that need something missing (Spark on some Windows setups, a stopped
 lake) skip themselves. CI sets `HMIS_FAIL_ON_SKIP=1`, which turns any skip into a

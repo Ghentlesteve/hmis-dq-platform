@@ -1,0 +1,57 @@
+# The dashboard: stateless, so a Deployment with two copies. Kubernetes keeps
+# both running, replaces one that crashes or stops answering its health check,
+# and only sends viewers to copies that are ready.
+# Open it at http://localhost:8601 (Docker Desktop publishes LoadBalancer ports).
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboard
+  labels:
+    app.kubernetes.io/name: dashboard
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: dashboard
+  ports:
+    - { name: http, port: 8601, targetPort: 8501 }
+  # Streamlit keeps each viewer's session in one copy's memory: keep a viewer there
+  sessionAffinity: ClientIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard
+  labels:
+    app.kubernetes.io/name: dashboard
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dashboard
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dashboard
+    spec:
+      containers:
+        - name: dashboard
+          image: hmis-dq-dashboard:dev
+          imagePullPolicy: Never # the image built by docker compose
+          envFrom:
+            - secretRef: { name: hmis-env }
+          env:
+            # inside the cluster the lake is the `lake` Service
+            - { name: HMIS_S3_ENDPOINT_URL, value: "http://lake:8333" }
+          ports:
+            - { containerPort: 8501, name: http }
+          readinessProbe:
+            httpGet: { path: /_stcore/health, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /_stcore/health, port: http }
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          resources:
+            requests: { cpu: 100m, memory: 300Mi }
+            limits: { memory: 1Gi }

@@ -27,7 +27,7 @@ from hmis_dq.extract.store import (
     S3RawStore,
     open_store,
 )
-from hmis_dq.extract.sync import sync_stores
+from hmis_dq.extract.sync import mirror_buckets, sync_stores
 
 if TYPE_CHECKING:
     from hmis_dq.nifi.deploy import Deployer
@@ -211,6 +211,50 @@ def lake_upload(
 
     console.print(
         f"[green]Done:[/] {result.copied} copied, {result.skipped} already in the lake, "
+        f"{result.bytes_written / 1e6:.1f} MB written"
+    )
+
+
+@lake_app.command("mirror")
+def lake_mirror(
+    to: Annotated[
+        str, typer.Option(help="S3 endpoint of the other lake, e.g. http://localhost:18333")
+    ],
+    workers: Annotated[int, typer.Option(min=1, max=32)] = 8,
+) -> None:
+    """Copy all three buckets, byte for byte, into another lake (same credentials).
+
+    Made for seeding the Kubernetes lake from the Docker Compose one without
+    downloading anything from DHIS2 again. Re-runs copy only what changed.
+    """
+    settings = get_settings()
+    source = S3RawStore.from_settings(settings).client
+    destination = S3RawStore.from_settings(
+        settings.model_copy(update={"s3_endpoint_url": to})
+    ).client
+    buckets = [
+        (b, b) for b in (settings.bronze_bucket, settings.silver_bucket, settings.gold_bucket)
+    ]
+    console.print(f"{settings.s3_endpoint_url} -> {to}")
+
+    with Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Copying", total=None)
+        result = mirror_buckets(
+            source,
+            destination,
+            buckets,
+            workers=workers,
+            on_planned=lambda n: progress.update(task, total=n),
+            on_copied=lambda _: progress.advance(task),
+        )
+    console.print(
+        f"[green]Done:[/] {result.copied} copied, {result.skipped} already there, "
         f"{result.bytes_written / 1e6:.1f} MB written"
     )
 

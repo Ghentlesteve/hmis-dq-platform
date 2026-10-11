@@ -4,6 +4,9 @@
 can be unit-tested without starting a JVM.
 """
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+
 from pyspark.sql import SparkSession
 
 from hmis_dq.config import Settings
@@ -48,3 +51,23 @@ def build_spark(settings: Settings, app_name: str) -> SparkSession:
     spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("WARN")
     return spark
+
+
+@contextmanager
+def session_setting(spark: SparkSession, key: str, value: str) -> Iterator[None]:
+    """Change a Spark SQL setting for the ``with`` block only.
+
+    `hmis-dq spark build` runs silver, gold and the checks in one session, so a
+    setting one step changes and leaves behind silently changes the next steps:
+    silver's "keep partition values as text" once turned gold's year into text
+    and broke the checks' "%d" messages.
+    """
+    previous = spark.conf.get(key, None)
+    spark.conf.set(key, value)
+    try:
+        yield
+    finally:
+        if previous is None:
+            spark.conf.unset(key)
+        else:
+            spark.conf.set(key, previous)
