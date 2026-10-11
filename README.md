@@ -16,7 +16,7 @@ shows the results on an interactive map dashboard.
 4. [x] Data quality engine: WHO DQR metrics at scale
 5. [x] ML: forecasting vs. baselines, anomaly detection, early warning
 6. [x] Dashboard: district map and drill-down (Streamlit, in Docker)
-7. [ ] NiFi ingestion flow (built and unit-tested; first live run pending)
+7. [x] NiFi ingestion flow (nightly refresh, deployed from code)
 8. [ ] Kubernetes deployment and CI (CI done: GitHub Actions)
 
 ## Local setup
@@ -259,7 +259,8 @@ correcting them for weeks), retry what fails, and show an operator what happened
 That is what NiFi is for, so the nightly refresh runs as a NiFi flow:
 
 ```
-every day at 02:00
+Start refresh (every day at 02:00, or hmis-dq nifi run)
+  │
 List districts ─> Plan chunks ─> One chunk per FlowFile ─> Chunk attributes
 (InvokeHTTP)      (Python)       (SplitJson)               (EvaluateJsonPath)
                                                                   │
@@ -287,9 +288,21 @@ hmis-dq nifi status                   # what each step did; anything failed?
 ```
 
 NiFi's UI is at https://localhost:18443/nifi (a self-signed certificate: the
-browser warns once). Status: the processors and the deployer are unit-tested
-(against a fake NiFi that enforces the real API's validation rules); the first
-run against a live NiFi is still to come.
+browser warns once).
+
+**First live run (NiFi 2.12.0):** the flow deployed valid and refreshed July to
+September 2026: 78 files (2 datasets x 13 districts x 3 months) in about 6 minutes
+against the public demo server. A NiFi-written file holds exactly what a direct
+fetch with the Python extractor returns (2,800 values for Bo, Reproductive
+Health, August 2026), and the rest of the pipeline reads both alike.
+
+The live run also taught the tests three things the fake NiFi now enforces: the
+S3 access key must be a *sensitive* parameter; Python processors spend a while
+"initializing their runtime" on first start; and a request made by a processor
+with no input FlowFile vanishes on failure instead of being parked, which is why
+the flow begins with a separate trigger step. It also showed why monitoring
+matters: the DHIS2 demo moved from `stable-2-43-1` to `stable-2-43-2` and the old
+address now answers 404.
 
 ## Continuous integration
 

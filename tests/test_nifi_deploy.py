@@ -19,7 +19,7 @@ from hmis_dq import cli
 from hmis_dq.config import Settings
 from hmis_dq.nifi.client import NiFiClient, NiFiError
 from hmis_dq.nifi.deploy import Deployer
-from hmis_dq.nifi.flow import FAILED, FLOW_NAME, dhis2_to_bronze
+from hmis_dq.nifi.flow import FAILED, FLOW_NAME, TRIGGER, dhis2_to_bronze
 
 # Processor types the fake knows: properties as (internal name, display name),
 # whether dynamic properties are allowed, and the relationships.
@@ -37,6 +37,11 @@ INVOKE_HTTP = {
 }
 PYTHON_TRANSFORM = ["success", "failure", "original"]
 TYPES: dict[str, dict[str, Any]] = {
+    "org.apache.nifi.processors.standard.GenerateFlowFile": {
+        "properties": [("File Size", "File Size")],
+        "dynamic": True,
+        "relationships": ["success"],
+    },
     "org.apache.nifi.processors.standard.InvokeHTTP": INVOKE_HTTP,
     "ListDhis2Chunks": {
         "properties": [("Data Sets", "Data Sets"), ("Months Back", "Months Back")],
@@ -96,6 +101,8 @@ class FakeNiFi:
         self.connections: dict[str, dict[str, Any]] = {}
         self.calls: list[str] = []
         self.missing_types: set[str] = set()
+        # Python processors report "still setting up" this many times before validating
+        self.python_setting_up = 0
 
     # -------------------------------------------------------------- routing
 
@@ -239,7 +246,7 @@ class FakeNiFi:
                 f"'{n}' is not a supported property"
                 for n in item.get("properties", {})
                 if n not in known
-            ]
+            ] + self._sensitivity_errors(item)
         if item["id"] in self.connections:
             return {
                 "id": item["id"],
@@ -248,9 +255,37 @@ class FakeNiFi:
             }
         return {"id": item["id"], "revision": {"version": item["version"]}, "component": component}
 
+    def _sensitivity_errors(self, service: dict[str, Any]) -> list[str]:
+        """Real NiFi: a sensitive property may only use sensitive parameters, and the
+        AWS credentials service's key properties are both sensitive."""
+        sensitive = {
+            p["parameter"]["name"]: p["parameter"]["sensitive"]
+            for context in self.contexts.values()
+            for p in context["parameters"]
+        }
+        displays = dict(SERVICE_PROPERTIES)
+        return [
+            f"'{displays[name]}' is invalid because The property '{displays[name]}' cannot "
+            f"reference Parameter '{value[2:-1]}' because the Sensitivity of the parameter "
+            "does not match the Sensitivity of the property."
+            for name, value in service.get("properties", {}).items()
+            if value.startswith("#{") and not sensitive.get(value[2:-1], False)
+        ]
+
     def _processor_errors(self, item: dict[str, Any], kind: dict[str, Any]) -> list[str]:
+        if "." not in item["type"] and self.python_setting_up > 0:
+            self.python_setting_up -= 1
+            return [
+                "'Processor' is invalid because Initializing runtime environment for the Processor."
+            ]
         config = item.get("config", {})
         errors = []
+        for value in config.get("properties", {}).values():
+            if value in self.services and self.services[value]["state"] == "DISABLED":
+                errors.append(
+                    f"'AWS Credentials Provider Service' validated against '{value}' is invalid "
+                    f"because Controller Service with ID {value} is disabled"
+                )
         known = {name for name, _ in kind["properties"]}
         for name in config.get("properties", {}):
             if name not in known and not kind["dynamic"]:
@@ -292,7 +327,7 @@ def client(fake: FakeNiFi, settings: Settings) -> Iterator[NiFiClient]:
 
 @pytest.fixture
 def deployer(client: NiFiClient) -> Deployer:
-    return Deployer(client, timeout=1, poll=0)
+    return Deployer(client, timeout=1, python_timeout=1, poll=0)
 
 
 def by_name(fake: FakeNiFi, name: str) -> dict[str, Any]:
@@ -330,7 +365,7 @@ def test_the_flow_deploys_valid(deployer: Deployer, fake: FakeNiFi, settings: Se
     deployment = deployer.deploy(flow)
 
     assert deployment.problems == {}
-    assert len(fake.processors) == len(flow.processors) == 7
+    assert len(fake.processors) == len(flow.processors) == 8
     assert len(fake.connections) == len(flow.connections)
     assert len(fake.funnels) == 1
     (group,) = fake.groups.values()
@@ -347,6 +382,7 @@ def test_secrets_go_to_nifi_as_sensitive_parameters(
     parameters = {p["parameter"]["name"]: p["parameter"] for p in context["parameters"]}
     assert parameters["dhis2.password"]["sensitive"] is True
     assert parameters["s3.secret.key"]["sensitive"] is True
+    assert parameters["s3.access.key"]["sensitive"] is True  # NiFi requires it (live run)
     assert parameters["dhis2.username"]["sensitive"] is False
     assert parameters["dhis2.api"]["value"] == "https://dhis2.test/demo/api"
     # processors only ever see a reference, never the secret itself
@@ -386,9 +422,11 @@ def test_schedule_retries_and_parallelism(
 ) -> None:
     deployer.deploy(dhis2_to_bronze(settings))
 
-    districts = by_name(fake, "List districts")["config"]
-    assert districts["schedulingStrategy"] == "CRON_DRIVEN"
-    assert districts["schedulingPeriod"] == "0 0 2 * * ?"
+    trigger = by_name(fake, TRIGGER)["config"]
+    assert trigger["schedulingStrategy"] == "CRON_DRIVEN"
+    assert trigger["schedulingPeriod"] == "0 0 2 * * ?"
+    # the request itself waits for the trigger's FlowFile, so it can retry and park
+    assert by_name(fake, "List districts")["config"]["schedulingStrategy"] == "TIMER_DRIVEN"
     fetch = by_name(fake, "Fetch data values")["config"]
     assert fetch["concurrentlySchedulableTaskCount"] == 3
     assert fetch["retriedRelationships"] == ["Retry"]
@@ -414,6 +452,27 @@ def test_everything_that_can_fail_ends_in_the_failed_funnel(
         for c in fake.connections.values()
         if c["destination"]["id"] == funnel_id
     )
+
+
+def test_deploy_waits_while_nifi_sets_up_python(
+    deployer: Deployer, fake: FakeNiFi, settings: Settings
+) -> None:
+    fake.python_setting_up = 3  # as on a first start, seen live
+
+    deployment = deployer.deploy(dhis2_to_bronze(settings))
+
+    assert deployment.problems == {}
+    assert fake.python_setting_up == 0
+
+
+def test_a_disabled_service_is_not_a_problem_since_start_enables_it(
+    deployer: Deployer, fake: FakeNiFi, settings: Settings
+) -> None:
+    deployment = deployer.deploy(dhis2_to_bronze(settings))
+
+    save = next(p for p in fake.processors.values() if p["name"] == "Save to bronze")
+    assert any("is disabled" in e for e in fake._entity(save)["component"]["validationErrors"])
+    assert "Save to bronze" not in deployment.problems
 
 
 def test_problems_nifi_reports_are_returned(
@@ -456,7 +515,7 @@ def test_redeploy_needs_replace_and_then_rebuilds_cleanly(
 
     assert len(fake.groups) == 1
     assert len(fake.contexts) == 1  # the old parameter context went with the old group
-    assert len(fake.processors) == 7
+    assert len(fake.processors) == 8
 
 
 # ---------------------------------------------------------------- operate
@@ -481,11 +540,11 @@ def test_run_once_returns_the_processor_to_its_schedule(
     deployment = deployer.deploy(dhis2_to_bronze(settings))
     deployer.start(deployment)
 
-    deployer.run_once(deployment.group_id, "List districts")
+    deployer.run_once(deployment.group_id, TRIGGER)
 
-    districts = by_name(fake, "List districts")
-    assert districts["history"] == ["STOPPED", "RUN_ONCE", "RUNNING"]
-    assert districts["state"] == "RUNNING"
+    trigger = by_name(fake, TRIGGER)
+    assert trigger["history"] == ["STOPPED", "RUN_ONCE", "RUNNING"]
+    assert trigger["state"] == "RUNNING"
 
 
 def test_status_lists_steps_in_flow_order_and_counts_failures(

@@ -1,6 +1,7 @@
 """The NiFi flow that refreshes the bronze layer, described as data.
 
-    every day at 02:00
+    Start refresh (every day at 02:00, or `hmis-dq nifi run`)
+      │
     List districts ──> Plan chunks ──> One chunk per FlowFile ──> Chunk attributes
     (InvokeHTTP)       (Python)        (SplitJson)                (EvaluateJsonPath)
                                                                          │
@@ -8,7 +9,10 @@
     (PutS3Object)      (Python)                (InvokeHTTP, 3 at a time)
 
 Anything that still fails after NiFi's retries is parked in the "Failed" funnel,
-where it waits, visible on the canvas, instead of disappearing.
+where it waits, visible on the canvas, instead of disappearing. That's why the
+flow starts with a separate trigger: a request made by a processor with no
+input FlowFile has nothing to retry or park when it fails, and just vanishes
+(seen in the first live run, when the DHIS2 demo server had moved).
 
 Properties use the names shown in NiFi's UI; `#{...}` are parameters (set from
 .env at deploy time, secrets marked sensitive) and `${...}` are FlowFile
@@ -22,6 +26,7 @@ from hmis_dq.extract.catalog import DATASETS, DEFAULT_DATASETS
 
 FLOW_NAME = "DHIS2 to bronze"
 FAILED = "Failed"  # the funnel failures are parked in
+TRIGGER = "Start refresh"  # the scheduled first step; `hmis-dq nifi run` runs it once
 SERVICE = "@service:"  # a property value naming a controller service of this flow
 
 
@@ -94,7 +99,8 @@ def dhis2_to_bronze(settings: Settings) -> Flow:
         Parameter("s3.endpoint", str(settings.nifi_s3_endpoint_url).rstrip("/")),
         Parameter("s3.region", settings.s3_region),
         Parameter("s3.bucket", settings.bronze_bucket),
-        Parameter("s3.access.key", settings.s3_access_key or ""),
+        # NiFi treats the access key as secret too, so the parameter must be sensitive
+        Parameter("s3.access.key", settings.s3_access_key or "", sensitive=True),
         Parameter("s3.secret.key", secret, sensitive=True),
     )
     dhis2_login = {"Request Username": "#{dhis2.username}", "Request Password": "#{dhis2.password}"}
@@ -102,6 +108,15 @@ def dhis2_to_bronze(settings: Settings) -> Flow:
     invoke_http_ends = ("Retry", "No Retry", "Failure")
 
     processors = (
+        Processor(
+            "trigger",
+            TRIGGER,
+            "GenerateFlowFile",
+            (0, -200),
+            {"File Size": "0B"},
+            schedule=settings.nifi_schedule,
+            cron=True,
+        ),
         Processor(
             "districts",
             "List districts",
@@ -114,8 +129,6 @@ def dhis2_to_bronze(settings: Settings) -> Flow:
                 ),
                 **dhis2_login,
             },
-            schedule=settings.nifi_schedule,
-            cron=True,
             auto_terminate=("Original",),
             retry=Retry(("Retry",)),
         ),
@@ -195,6 +208,7 @@ def dhis2_to_bronze(settings: Settings) -> Flow:
         ),
     )
     connections = (
+        Connection("trigger", "districts", ("success",)),
         Connection("districts", "plan", ("Response",)),
         Connection("plan", "split", ("success",)),
         Connection("split", "attributes", ("split",)),

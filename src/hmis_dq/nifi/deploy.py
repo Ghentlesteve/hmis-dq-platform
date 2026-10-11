@@ -5,6 +5,7 @@ redeploying means: stop it, empty it, delete it, build it again. Nothing is
 clicked by hand, so the flow in NiFi is always the one in this repository.
 """
 
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -15,6 +16,9 @@ from hmis_dq.nifi.flow import FAILED, SERVICE, Flow, Processor
 
 NEW = {"version": 0}  # the revision of something that doesn't exist yet
 ROOT = "root"
+# NiFi's wording for a Python processor whose environment is still being prepared
+PYTHON_SETTING_UP = "Initializing runtime environment"
+SERVICE_DISABLED = re.compile(r"Controller Service with ID \S+ is disabled")
 
 
 @dataclass
@@ -34,9 +38,17 @@ def wait_until(check: Callable[[], bool], what: str, timeout: float, poll: float
 
 
 class Deployer:
-    def __init__(self, nifi: NiFiClient, *, timeout: float = 60.0, poll: float = 1.0) -> None:
+    def __init__(
+        self,
+        nifi: NiFiClient,
+        *,
+        timeout: float = 60.0,
+        python_timeout: float = 300.0,
+        poll: float = 1.0,
+    ) -> None:
         self.nifi = nifi
         self.timeout = timeout
+        self.python_timeout = python_timeout  # first-time Python setup can be slow
         self.poll = poll
         self._types: dict[str, dict[str, JSON]] = {}
 
@@ -238,7 +250,12 @@ class Deployer:
         return str(created["id"])
 
     def validation_problems(self, deployment: Deployment) -> dict[str, list[str]]:
-        """What NiFi says is wrong with each part, once it has finished checking."""
+        """What NiFi says is wrong with each part, once it has finished checking.
+
+        Not problems, so left out: a Python processor whose runtime NiFi is still
+        setting up (waited for; the first time takes a while), and a reference to
+        a controller service that is merely disabled, which start() enables.
+        """
         paths = [f"processors/{i}" for i in deployment.processors.values()]
         paths += [f"controller-services/{i}" for i in deployment.services.values()]
         problems: dict[str, list[str]] = {}
@@ -248,12 +265,20 @@ class Deployer:
             def checked(path: str = path) -> bool:
                 nonlocal entity
                 entity = self.nifi.get(path)
-                return bool(entity["component"].get("validationStatus") != "VALIDATING")
+                component = entity["component"]
+                setting_up = any(
+                    PYTHON_SETTING_UP in error for error in component.get("validationErrors") or []
+                )
+                return bool(component.get("validationStatus") != "VALIDATING" and not setting_up)
 
-            wait_until(checked, f"NiFi to validate {path}", self.timeout, self.poll)
-            errors = entity["component"].get("validationErrors") or []
+            wait_until(checked, f"NiFi to validate {path}", self.python_timeout, self.poll)
+            errors = [
+                error
+                for error in entity["component"].get("validationErrors") or []
+                if not SERVICE_DISABLED.search(error)
+            ]
             if errors:
-                problems[entity["component"]["name"]] = list(errors)
+                problems[entity["component"]["name"]] = errors
         return problems
 
     # ---------------------------------------------------------------- operate

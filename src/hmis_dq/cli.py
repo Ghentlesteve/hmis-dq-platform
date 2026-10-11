@@ -563,10 +563,12 @@ def nifi_deploy(
 @nifi_app.command("run")
 def nifi_run() -> None:
     """Fetch the latest months now, instead of waiting for the schedule."""
+    from hmis_dq.nifi.flow import TRIGGER  # noqa: PLC0415
+
     deployer = _nifi()
     group_id = _deployed_group(deployer)
-    with console.status("Asking DHIS2 for the district list..."):
-        deployer.run_once(group_id, "List districts")
+    with console.status("Starting a refresh..."):
+        deployer.run_once(group_id, TRIGGER)
     console.print("Triggered. The chunks are now flowing; watch them with: hmis-dq nifi status")
 
 
